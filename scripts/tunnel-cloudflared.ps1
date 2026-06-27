@@ -31,20 +31,26 @@ param(
     # Neu may ra internet QUA PROXY: dat proxy (http://user:pass@host:port).
     # Cloudflare ho tro proxy MIEN PHI nhung phai ep --protocol http2 (mac dinh
     # dung QUIC/UDP khong qua duoc HTTP proxy). Script tu them http2 khi co proxy.
-    [string]$Proxy         = $env:APP_TUNNEL_PROXY
+    [string]$Proxy         = $env:APP_TUNNEL_PROXY,
+    # Ep giao thuc: "http2" (TCP 443) khi mang CHAN QUIC/UDP 7844. De trong =
+    # mac dinh cua cloudflared (quic). Neu QUIC bi chan -> dung -Protocol http2.
+    [string]$Protocol      = $env:APP_TUNNEL_PROTOCOL
 )
 
 $ErrorActionPreference = "Stop"
 
 # Cloudflare doc HTTPS_PROXY/HTTP_PROXY (kem --protocol http2) de noi qua proxy.
-$UseHttp2 = $false
+# Qua proxy thi bat buoc http2. Neu QUIC bi chan, dat -Protocol http2 (khong proxy).
 if (-not [string]::IsNullOrWhiteSpace($Proxy)) {
     $env:HTTPS_PROXY = $Proxy
     $env:HTTP_PROXY  = $Proxy
     $env:https_proxy = $Proxy
     $env:http_proxy  = $Proxy
-    $UseHttp2 = $true
-    Write-Host "Dung proxy: $Proxy  (ep --protocol http2)" -ForegroundColor DarkGray
+    if ([string]::IsNullOrWhiteSpace($Protocol)) { $Protocol = "http2" }
+    Write-Host "Dung proxy: $Proxy" -ForegroundColor DarkGray
+}
+if (-not [string]::IsNullOrWhiteSpace($Protocol)) {
+    Write-Host "Giao thuc: $Protocol" -ForegroundColor DarkGray
 }
 
 # Tim cloudflared
@@ -73,9 +79,11 @@ while ($true) {
     Write-Host ""
     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Ket noi #$Attempt ..." -ForegroundColor Yellow
 
-    # Co dinh giao thuc + tang do ben khi proxy hay cat ket noi dai.
+    # Co dinh giao thuc + tang do ben khi mang/proxy hay cat ket noi dai.
     $common = @("--no-autoupdate", "--retries", "10", "--grace-period", "30s")
-    if ($UseHttp2) { $common = @("--protocol", "http2") + $common }
+    if (-not [string]::IsNullOrWhiteSpace($Protocol)) {
+        $common = @("--protocol", $Protocol) + $common
+    }
 
     if ([string]::IsNullOrWhiteSpace($TunnelName)) {
         & $CloudflaredExe tunnel @common --url "http://127.0.0.1:$Port"
