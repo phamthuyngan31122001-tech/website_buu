@@ -1,0 +1,32 @@
+﻿cargo :     Checking website_buu v0.1.0 (C:\Users\DELL\Desktop\website_buu)
+At line:1 char:29
++ ... NO_ASM="1"; cargo clippy --bin website_buu -- -W clippy::unwrap_used  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (    Checking we...op\website_buu) 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+error[E0369]: binary operation `!=` cannot be applied to type 
+`std::vec::Vec<models::User>`
+   --> src\web.rs:288:21
+    |
+288 |     if users_before != data.users {
+    |        ------------ ^^ ---------- std::vec::Vec<models::User>
+    |        |
+    |        std::vec::Vec<models::User>
+    |
+note: an implementation of `std::cmp::PartialEq` might be missing for 
+`models::User`
+   --> src\models.rs:51:1
+    |
+ 51 | pub struct User {
+    | ^^^^^^^^^^^^^^^ must implement `std::cmp::PartialEq`
+help: consider annotating `models::User` with `#[derive(PartialEq)]`
+   --> src\models.rs:51:1
+    |
+ 51 + #[derive(PartialEq)]
+ 52 | pub struct User {
+    |
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `website_buu` (lib) due to 1 previous error

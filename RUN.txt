@@ -1,0 +1,85 @@
+═════════════════════════════════════════════════════════════════
+                    CHẠY WEBSITE - HƯỚNG DẪN NHANH
+═════════════════════════════════════════════════════════════════
+
+✅ BƯỚC 1 - Khởi động Server (Terminal 1):
+────────────────────────────────────────────────────────────────
+$env:APP_RUNTIME_DIR="runtime"
+$env:APP_BIND_ADDR="127.0.0.1:18088"
+$env:APP_REQUIRE_HTTPS="0"
+$env:APP_ZK_ALLOW_INSECURE_DEV_SRS="1"
+$env:AWS_LC_SYS_NO_ASM="1"
+.\target\debug\website_buu.exe
+
+⏱️  Thời gian khởi động: ~2-3 giây
+📍 Địa chỉ Local: http://127.0.0.1:18088
+✓ Kiểm tra: curl http://127.0.0.1:18088 → HTTP 200
+
+
+🌐 BƯỚC 2 - (Tùy chọn) Đưa lên Internet (Terminal 2):
+────────────────────────────────────────────────────────────────
+powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1
+
+📍 URL công khai cố định hiện tại: https://e02430ace65840.lhr.life/
+✓ Đã kiểm tra sau khi restart tunnel: vẫn trả HTTP 200
+⚠️  Link cũ https://38c26531b059f2.lhr.life/ hiện trả 503, không còn được localhost.run giữ cho tunnel này
+
+
+🔐 ĐĂNG NHẬP MẶC ĐỊNH:
+────────────────────────────────────────────────────────────────
+👤 Username: Admin@1999
+🔑 Password: Admin@1999
+
+
+📁 THÔNG TIN HỆ THỐNG:
+────────────────────────────────────────────────────────────────
+📂 Thư mục dữ liệu:
+   - runtime/keys/master_key.b64        → Master key (DPAPI protected)
+   - runtime/data/                      → Database (Feather format)
+   - runtime/logs/app.log               → Application logs
+   - runtime/zk/                        → Zero-knowledge proofs
+
+⚙️  Cấu hình hiện tại:
+   - Server framework: Rust + Axum (async)
+   - Protocol: HTTP (HTTPS disabled)
+   - GPU support: Disabled (AWS_LC_SYS_NO_ASM=1)
+   - ZK Dev mode: Enabled
+
+📊 Thông số khi chạy:
+   - Memory usage: ~19 MB
+   - Startup time: 2-3 giây
+   - Connections: HTTP 200 OK
+
+
+🛑 DỪNG SERVER:
+────────────────────────────────────────────────────────────────
+Stop-Process -Name website_buu -Force -ErrorAction SilentlyContinue
+
+
+📋 TROUBLESHOOTING:
+────────────────────────────────────────────────────────────────
+❌ Error 10048: "Only one usage of each socket address"
+   → Port 18088 vẫn bị chiếm bởi process cũ
+   → Giải pháp:
+      1. Dừng tất cả process: 
+         Stop-Process -Name website_buu -Force -ErrorAction SilentlyContinue
+         Stop-Process -Name ssh -Force -ErrorAction SilentlyContinue
+      2. Chờ 2 giây
+      3. Chạy lại server
+   → Hoặc tìm process khác dùng port:
+      netstat -ano | Select-String ":18088"
+      taskkill /PID [PID] /F
+
+❌ Port 18088 bị chiếm:
+   → Cách 1: Stop-Process -Name website_buu -Force
+   → Cách 2: netstat -ano | Select-String ":18088" (tìm PID rồi kill)
+
+❌ Tunnel không kết nối được:
+   → SSH key setup: https://admin.localhost.run
+   → Proxy mode: Set $env:TUNNEL_PROXY_HOST trước khi chạy
+   → Kiểm tra link cố định hiện tại:
+      curl.exe --noproxy "*" https://e02430ace65840.lhr.life/
+
+❌ Master key error:
+   → Xóa: Remove-Item runtime/keys/master_key.b64
+   → Server sẽ tạo key mới khi khởi động lại

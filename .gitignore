@@ -1,0 +1,9 @@
+/target
+/runtime
+/.venv
+/build.err
+/build.log
+/build.out
+/cloudflared*.exe
+/ngrok.exe
+/ngrok.zip
