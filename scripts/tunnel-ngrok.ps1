@@ -31,8 +31,19 @@ param(
     [string]$NgrokExe   = "ngrok",
     # Region giup tranh duong mang bi ISP chan (loi ERR_NGROK_3200 / connection
     # forcibly closed). Thu: jp (Nhat), ap (Singapore), in (An Do), us, eu, au.
-    [string]$Region     = $env:APP_NGROK_REGION
+    [string]$Region     = $env:APP_NGROK_REGION,
+    # Neu may ban ra internet QUA PROXY, dat proxy o day de ngrok noi qua proxy
+    # (vd: http://user:pass@host:port). KHONG luu mat khau vao repo -> truyen luc chay.
+    [string]$Proxy      = $env:APP_TUNNEL_PROXY
 )
+
+# ngrok doc HTTPS_PROXY/HTTP_PROXY de noi toi may chu cua no. Neu mang chan ket
+# noi truc tiep (chi cho di qua proxy), bat buoc phai set proxy nay.
+if (-not [string]::IsNullOrWhiteSpace($Proxy)) {
+    $env:HTTPS_PROXY = $Proxy
+    $env:HTTP_PROXY  = $Proxy
+    Write-Host "Dung proxy: $Proxy" -ForegroundColor DarkGray
+}
 
 $ErrorActionPreference = "Stop"
 
