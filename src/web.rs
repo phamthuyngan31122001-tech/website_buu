@@ -176,9 +176,6 @@ struct SharedDocumentSyncForm {
 #[derive(Deserialize)]
 struct ProfileDocumentPushUpForm {
     csrf: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    password: String,
     preview_text: String,
 }
 
@@ -283,15 +280,9 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
-    let user_signature = |users: &[User]| -> Vec<(String, String)> {
-        users
-            .iter()
-            .map(|u| (u.username.clone(), u.password_hash.clone()))
-            .collect()
-    };
-    let users_before_sig = user_signature(&data.users);
+    let users_before = data.users.clone();
     ensure_bootstrap_admin(&mut data)?;
-    if user_signature(&data.users) != users_before_sig {
+    if data.users != users_before {
         startup_state_changed = true;
     }
 
@@ -6963,9 +6954,6 @@ struct DownloadForm {
 #[derive(Deserialize)]
 struct MemberExportForm {
     csrf: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    password: String,
 }
 
 #[derive(Deserialize)]
@@ -8745,16 +8733,6 @@ fn unit_display_label(name: &str) -> String {
     }
 }
 
-#[allow(dead_code)]
-fn cluster_step(count: usize, span: f32, orbit_radius: f32, node_radius: f32, gap: f32) -> f32 {
-    if count <= 1 {
-        return 0.0;
-    }
-    let span_step = span / (count as f32 - 1.0);
-    let minimum_step = (node_radius * 2.0 + gap) / orbit_radius.max(1.0);
-    span_step.max(minimum_step)
-}
-
 fn node_radius(tier: u32) -> u32 {
     match tier {
         0 => 100,
@@ -9231,7 +9209,6 @@ fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str)
             continue;
         }
 
-        let current_header = rows.first().cloned().unwrap_or_default();
         merged.extend(rows.into_iter().skip(1));
     }
     renumber_stt_column(&mut merged);
