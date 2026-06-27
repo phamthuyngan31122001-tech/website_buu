@@ -452,6 +452,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/zk/documents/{id}/package", get(zk_document_package))
         .route("/service-worker.js", get(service_worker_asset))
+        .route("/assets/emblem.svg", get(serve_emblem_svg))
         .route(
             &format!("/assets/{}", assets.base_css_filename),
             get(serve_base_css),
@@ -575,6 +576,62 @@ pub(crate) fn static_assets() -> &'static StaticAssets {
             login_js_filename,
         }
     })
+}
+
+/// Phù hiệu Quân khu 5 dạng SVG, nhúng sẵn trong mã nguồn để không phụ thuộc
+/// dịch vụ internet ngoài (phù hợp môi trường LAN nội bộ). Dùng làm logo và
+/// hình nền watermark trong giao diện.
+pub(crate) fn emblem_svg() -> &'static str {
+    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Phù hiệu Quân khu 5">
+  <defs>
+    <radialGradient id="qk5disc" cx="50%" cy="42%" r="70%">
+      <stop offset="0%" stop-color="#e23a2e"/>
+      <stop offset="100%" stop-color="#b3160f"/>
+    </radialGradient>
+    <linearGradient id="qk5ring" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f6d271"/>
+      <stop offset="50%" stop-color="#cda23a"/>
+      <stop offset="100%" stop-color="#a87f24"/>
+    </linearGradient>
+    <linearGradient id="qk5grain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe79a"/>
+      <stop offset="100%" stop-color="#d6a72f"/>
+    </linearGradient>
+  </defs>
+  <circle cx="100" cy="100" r="96" fill="url(#qk5ring)"/>
+  <circle cx="100" cy="100" r="88" fill="#8c1109"/>
+  <circle cx="100" cy="100" r="82" fill="url(#qk5disc)"/>
+  <g fill="url(#qk5grain)" stroke="#9c7416" stroke-width="0.6">
+    <g id="qk5ear">
+      <path d="M100 178 C70 168 50 140 46 104" fill="none" stroke="#caa033" stroke-width="3"/>
+      <g>
+        <ellipse cx="49" cy="112" rx="4.4" ry="8" transform="rotate(-32 49 112)"/>
+        <ellipse cx="52" cy="126" rx="4.4" ry="8" transform="rotate(-26 52 126)"/>
+        <ellipse cx="57" cy="140" rx="4.4" ry="8" transform="rotate(-20 57 140)"/>
+        <ellipse cx="64" cy="152" rx="4.4" ry="8" transform="rotate(-12 64 152)"/>
+        <ellipse cx="73" cy="162" rx="4.4" ry="8" transform="rotate(-4 73 162)"/>
+        <ellipse cx="84" cy="170" rx="4.2" ry="7.4" transform="rotate(4 84 170)"/>
+      </g>
+    </g>
+    <use href="#qk5ear" transform="matrix(-1 0 0 1 200 0)"/>
+  </g>
+  <g transform="translate(100 30)">
+    <path d="M0 6 L42 0 L40 16 L2 22 Z" fill="#ffd23c"/>
+    <path d="M-2 4 L-2 40 L2 40 L2 6 Z" fill="#a87f24"/>
+    <polygon points="14,4 16,9 21,9 17,12 18,17 14,14 10,17 11,12 7,9 12,9" fill="#d11f1f"/>
+  </g>
+  <polygon points="100,58 107.6,81.5 132.3,81.5 112.4,96 120,119.5 100,105 80,119.5 87.6,96 67.7,81.5 92.4,81.5"
+           fill="#ffd23c" stroke="#b8860b" stroke-width="1"/>
+  <path d="M40 132 Q100 116 160 132 L160 150 Q100 134 40 150 Z" fill="#7c0d07"/>
+  <text x="100" y="146" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
+        font-size="17" font-weight="700" fill="#ffd23c" letter-spacing="1.5">QUÂN KHU 5</text>
+  <text x="100" y="120" text-anchor="middle" font-family="Georgia, serif"
+        font-size="9" font-weight="700" fill="#ffe79a" letter-spacing="1">16-10-1945</text>
+</svg>"##
+}
+
+async fn serve_emblem_svg() -> Response {
+    cached_asset_response("image/svg+xml; charset=utf-8", emblem_svg())
 }
 
 fn cached_asset_response(content_type: &'static str, body: &'static str) -> Response {
@@ -3156,6 +3213,13 @@ async fn render_dashboard(
             body data-panel-root="dashboard" data-initial-panel=(initial_panel) data-sync-username=(&user.username) data-tree-edit-admin=(user.role == UserRole::RootAdmin) data-tree-csrf=(&csrf) data-dashboard-org-id=(dashboard_org.as_ref().map(|org| org.id.as_str()).unwrap_or_default()) {
                 main class="shell command-shell" {
                     section class="graph-stage minimal-stage" {
+                        div class="stage-brand" {
+                            img class="stage-brand-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="46" height="46";
+                            div class="stage-brand-text" {
+                                span class="stage-brand-title" { "HỆ THỐNG NỘI BỘ" }
+                                span class="stage-brand-sub" { "Quân khu 5" }
+                            }
+                        }
                         div class="floating-controls" {
                             div class="top-control-row" {
                                 div class="panel-shell" data-panel="settings" {
@@ -4203,6 +4267,11 @@ fn render_login(
             body data-panel-root="login" {
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
+                        div class="login-brand" {
+                            img class="login-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="96" height="96";
+                            h1 class="login-brand-title" { "HỆ THỐNG NỘI BỘ" }
+                            p class="login-brand-sub" { "Quản lý tổ chức · Quân khu 5" }
+                        }
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
                             p class="login-wait-message" data-login-wait-message="true" { (message) }
                         }
@@ -4450,11 +4519,49 @@ fn base_styles() -> &'static str {
             place-items: center;
         }
         body[data-panel-root="login"] {
-            background: #ffffff !important;
+            background:
+                radial-gradient(circle at 50% 18%, rgba(209, 31, 31, 0.06), transparent 42%),
+                radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.10), transparent 55%),
+                #f6f7f9 !important;
             color: #111111;
         }
         body[data-panel-root="login"] .login-shell {
-            background: #ffffff;
+            background:
+                url("/assets/emblem.svg") center 12vh / 320px no-repeat,
+                transparent;
+        }
+        body[data-panel-root="login"] .login-shell::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: rgba(246, 247, 249, 0.82);
+            z-index: 0;
+        }
+        body[data-panel-root="login"] .login-shell > * { position: relative; z-index: 1; }
+        .login-brand {
+            display: grid;
+            justify-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            text-align: center;
+        }
+        .login-emblem {
+            width: 96px;
+            height: 96px;
+            filter: drop-shadow(0 6px 14px rgba(140, 17, 9, 0.28));
+        }
+        .login-brand-title {
+            margin: 6px 0 0;
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #8c1109;
+        }
+        .login-brand-sub {
+            margin: 0;
+            font-size: 12.5px;
+            color: #6b7280;
+            letter-spacing: 0.5px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -4471,8 +4578,53 @@ fn base_styles() -> &'static str {
             border-radius: 32px;
             overflow: hidden;
             border: 1px solid #e5e7eb;
-            background: #ffffff;
+            background:
+                radial-gradient(circle at 12% 8%, rgba(209, 31, 31, 0.05), transparent 30%),
+                radial-gradient(circle at 88% 92%, rgba(205, 162, 58, 0.07), transparent 32%),
+                url("/assets/emblem.svg") right -60px bottom -60px / 360px no-repeat,
+                #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
+        }
+        .graph-stage::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.9);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .graph-stage > * { position: relative; z-index: 1; }
+        .stage-brand {
+            position: absolute;
+            left: 20px;
+            bottom: 18px;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px 8px 10px;
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid rgba(140, 17, 9, 0.18);
+            border-radius: 14px;
+            box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
+            backdrop-filter: blur(6px);
+        }
+        .stage-brand-emblem {
+            width: 46px;
+            height: 46px;
+            filter: drop-shadow(0 2px 5px rgba(140, 17, 9, 0.25));
+        }
+        .stage-brand-text { display: grid; line-height: 1.15; }
+        .stage-brand-title {
+            font-size: 12.5px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: #8c1109;
+        }
+        .stage-brand-sub { font-size: 11px; color: #6b7280; letter-spacing: 0.4px; }
+        @media (max-width: 720px) {
+            .stage-brand { left: 12px; bottom: 12px; padding: 6px 10px 6px 8px; }
+            .stage-brand-emblem { width: 36px; height: 36px; }
         }
         .minimal-stage { min-height: calc(100vh - 28px); }
         .floating-controls {
