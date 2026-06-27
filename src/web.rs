@@ -463,6 +463,7 @@ fn build_router(state: AppState) -> Router {
         .route("/sync/bootstrap", get(sync_bootstrap))
         .route("/documents/manage", get(document_manager))
         .route("/units/{id}", get(unit_profile))
+        .route("/units/{id}/manage", get(unit_manage))
         .route("/units/{id}/documents/unlock", post(unlock_unit_documents))
         .route(
             "/units/{unit_id}/documents/{doc_id}",
@@ -2334,7 +2335,11 @@ async fn update_member(
     if persist(&state, &data).is_err() {
         return internal_error("Không cập nhật được thành viên.");
     }
-    Redirect::to(&format!("/units/{}", unit_id)).into_response()
+    if form.return_to.is_empty() {
+        Redirect::to(&format!("/units/{}", unit_id)).into_response()
+    } else {
+        redirect_back(&form.return_to)
+    }
 }
 
 async fn login(
@@ -2452,7 +2457,7 @@ async fn create_root_org(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được dữ liệu tổ chức.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn create_child_org(
@@ -2509,7 +2514,7 @@ async fn create_child_org(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được nhánh tổ chức.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn add_member(
@@ -2563,7 +2568,7 @@ async fn add_member(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được thành viên.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn add_activity(
@@ -2596,7 +2601,7 @@ async fn add_activity(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được hoạt động.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn review_activity(
@@ -2627,7 +2632,7 @@ async fn review_activity(
     if persist(&state, &data).is_err() {
         return internal_error("Không cập nhật được trạng thái kiểm tra.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn create_user(
@@ -2665,7 +2670,7 @@ async fn create_user(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được người dùng.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn update_dashboard_tree_user_credentials(
@@ -3236,6 +3241,14 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                             }
                         }
                         div class="profile-right-tools" {
+                            @if access == ProfileAccess::Full {
+                                a href=(format!("/units/{}/manage", unit.id)) class="rail-button profile-corner-button profile-manage-button" title="Quản lý đơn vị" aria-label="Quản lý đơn vị" {
+                                    svg viewBox="0 0 24 24" aria-hidden="true" {
+                                        path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" fill="none" stroke="currentColor" stroke-width="2";
+                                        path d="M19.4 13a7.6 7.6 0 0 0 .05-2l1.6-1.2-1.6-2.8-1.9.7a7.6 7.6 0 0 0-1.7-1l-.3-2H10.4l-.3 2a7.6 7.6 0 0 0-1.7 1l-1.9-.7-1.6 2.8L6.5 11a7.6 7.6 0 0 0 0 2l-1.6 1.2 1.6 2.8 1.9-.7a7.6 7.6 0 0 0 1.7 1l.3 2h3.2l.3-2a7.6 7.6 0 0 0 1.7-1l1.9.7 1.6-2.8L19.4 13Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round";
+                                    }
+                                }
+                            }
                             a href="/" class="rail-button profile-corner-button profile-home-button" title="Về trang chủ" aria-label="Về trang chủ" {
                                 svg viewBox="0 0 24 24" aria-hidden="true" {
                                     path d="M12 3.5 3.5 10.8v9.7h6v-6h5v6h6v-9.7L12 3.5Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round";
@@ -3275,6 +3288,325 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                                     unit_is_leaf: can_upload_documents_here,
                                 }))
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn unit_manage(
+    State(state): State<AppState>,
+    Path(unit_id): Path<String>,
+    jar: CookieJar,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return Redirect::to("/").into_response();
+    };
+    let data = state.data.read().await;
+    let Some(unit) = data
+        .organizations
+        .iter()
+        .find(|org| org.id == unit_id)
+        .cloned()
+    else {
+        return Redirect::to("/").into_response();
+    };
+    // Chỉ đơn vị có toàn quyền (admin hoặc cấp trên của đơn vị này) mới quản lý được.
+    if profile_access(&user, &unit.id, &data) != Some(ProfileAccess::Full) {
+        return Redirect::to("/").into_response();
+    }
+
+    let mut members: Vec<_> = data
+        .members
+        .iter()
+        .filter(|member| member.org_id == unit.id)
+        .cloned()
+        .collect();
+    members.sort_by(|left, right| left.full_name.cmp(&right.full_name));
+    let mut activities: Vec<_> = data
+        .activities
+        .iter()
+        .filter(|activity| activity.org_id == unit.id)
+        .cloned()
+        .collect();
+    activities.sort_by(|left, right| {
+        right
+            .year
+            .cmp(&left.year)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let mut children = direct_children(&data.organizations, &unit.id);
+    children.sort_by(|left, right| org_sort_key(&left.name).cmp(&org_sort_key(&right.name)));
+    let mut unit_users: Vec<_> = data
+        .users
+        .iter()
+        .filter(|item| item.org_id.as_deref() == Some(unit.id.as_str()))
+        .cloned()
+        .collect();
+    unit_users.sort_by(|left, right| left.username.cmp(&right.username));
+    let is_root_admin = user.role == UserRole::RootAdmin;
+    let csrf = session.csrf_token.clone();
+    drop(data);
+
+    Html(
+        render_unit_manage_page(UnitManageView {
+            unit: &unit,
+            members: &members,
+            activities: &activities,
+            children: &children,
+            unit_users: &unit_users,
+            is_root_admin,
+            csrf: &csrf,
+        })
+        .into_string(),
+    )
+    .into_response()
+}
+
+struct UnitManageView<'a> {
+    unit: &'a Organization,
+    members: &'a [Member],
+    activities: &'a [Activity],
+    children: &'a [Organization],
+    unit_users: &'a [User],
+    is_root_admin: bool,
+    csrf: &'a str,
+}
+
+fn activity_status_label(status: &ActivityStatus) -> &'static str {
+    match status {
+        ActivityStatus::Completed => "Đã hoàn thành",
+        ActivityStatus::Ongoing => "Đang diễn ra",
+        ActivityStatus::Planned => "Dự kiến",
+    }
+}
+
+fn render_unit_manage_page(view: UnitManageView<'_>) -> Markup {
+    let UnitManageView {
+        unit,
+        members,
+        activities,
+        children,
+        unit_users,
+        is_root_admin,
+        csrf,
+    } = view;
+    let return_to = format!("/units/{}/manage", unit.id);
+    let current_year = Utc::now().year();
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (format!("Quản lý đơn vị {}", unit.name)) }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="stylesheet" href=(static_assets().base_css_url);
+            }
+            body data-panel-root="manage" {
+                main class="shell manage-shell" {
+                    header class="manage-header" {
+                        img class="manage-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="56" height="56";
+                        div class="manage-header-text" {
+                            span class="manage-over" { "QUÂN KHU 5" }
+                            h1 class="manage-title" { "Quản lý đơn vị " (&unit.name) }
+                        }
+                        div class="manage-header-actions" {
+                            a href=(format!("/units/{}", unit.id)) class="manage-link-btn" { "Xem tài liệu" }
+                            a href="/" class="manage-link-btn" { "Trang chủ" }
+                        }
+                    }
+
+                    // ── Thành viên ───────────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Thành viên (" (members.len()) ")" }
+                        @if members.is_empty() {
+                            p class="muted" { "Chưa có thành viên." }
+                        } @else {
+                            div class="manage-table-wrap" {
+                                table class="manage-table" {
+                                    thead { tr {
+                                        th { "Họ tên" } th { "Chức vụ" } th { "Năm" }
+                                        th { "Ngày sinh" } th { "Điện thoại" } th { "Hoạt động" } th {}
+                                    } }
+                                    tbody {
+                                        @for member in members {
+                                            tr {
+                                                td { (&member.full_name) }
+                                                td { (&member.title) }
+                                                td { (member.year) }
+                                                td { (&member.birth_date) }
+                                                td { (&member.phone) }
+                                                td { (if member.active { "Đang hoạt động" } else { "Ngừng" }) }
+                                                td {
+                                                    details class="manage-edit" {
+                                                        summary { "Sửa" }
+                                                        form method="post" action=(format!("/units/{}/members/{}", unit.id, member.id)) class="manage-form manage-form-grid" {
+                                                            input type="hidden" name="csrf" value=(csrf);
+                                                            input type="hidden" name="return_to" value=(&return_to);
+                                                            label { "Họ tên" input type="text" name="full_name" value=(&member.full_name) required; }
+                                                            label { "Chức vụ" input type="text" name="title" value=(&member.title); }
+                                                            label { "Ngày sinh" input type="text" name="birth_date" value=(&member.birth_date) placeholder="1990-01-01"; }
+                                                            label { "Điện thoại" input type="text" name="phone" value=(&member.phone); }
+                                                            label { "Địa chỉ" input type="text" name="address" value=(&member.address); }
+                                                            label { "Ngày vào" input type="text" name="joined_at" value=(&member.joined_at) placeholder="2020-01-01"; }
+                                                            label class="manage-span2" { "Ghi chú" input type="text" name="notes" value=(&member.notes); }
+                                                            label class="manage-check" { input type="checkbox" name="active" checked[member.active]; " Đang hoạt động" }
+                                                            button type="submit" class="manage-submit" { "Lưu thay đổi" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Thêm thành viên" }
+                            form method="post" action=(format!("/orgs/{}/members", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Họ tên" input type="text" name="full_name" required; }
+                                label { "Chức vụ" input type="text" name="title" placeholder="Đảng viên"; }
+                                label { "Năm" input type="number" name="year" value=(current_year); }
+                                label { "Ngày sinh" input type="text" name="birth_date" placeholder="1990-01-01"; }
+                                label { "Điện thoại" input type="text" name="phone"; }
+                                label { "Địa chỉ" input type="text" name="address"; }
+                                label { "Ngày vào" input type="text" name="joined_at" placeholder="2020-01-01"; }
+                                label class="manage-span2" { "Ghi chú" input type="text" name="notes"; }
+                                button type="submit" class="manage-submit" { "Thêm thành viên" }
+                            }
+                        }
+                    }
+
+                    // ── Hoạt động ────────────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Hoạt động (" (activities.len()) ")" }
+                        @if activities.is_empty() {
+                            p class="muted" { "Chưa có hoạt động." }
+                        } @else {
+                            div class="manage-table-wrap" {
+                                table class="manage-table" {
+                                    thead { tr { th { "Tiêu đề" } th { "Năm" } th { "Trạng thái" } th { "Đã kiểm tra" } th {} } }
+                                    tbody {
+                                        @for activity in activities {
+                                            tr {
+                                                td { (&activity.title) }
+                                                td { (activity.year) }
+                                                td { (activity_status_label(&activity.status)) }
+                                                td { (if activity.reviewed { "✓" } else { "—" }) }
+                                                td {
+                                                    @if !activity.reviewed {
+                                                        form method="post" action=(format!("/activities/{}/review", activity.id)) class="manage-inline-form" {
+                                                            input type="hidden" name="csrf" value=(csrf);
+                                                            input type="hidden" name="return_to" value=(&return_to);
+                                                            button type="submit" class="manage-submit manage-submit-sm" { "Duyệt" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Thêm hoạt động" }
+                            form method="post" action=(format!("/orgs/{}/activities", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Tiêu đề" input type="text" name="title" required; }
+                                label { "Năm" input type="number" name="year" value=(current_year); }
+                                label { "Trạng thái"
+                                    select name="status" {
+                                        option value="planned" { "Dự kiến" }
+                                        option value="ongoing" { "Đang diễn ra" }
+                                        option value="completed" { "Đã hoàn thành" }
+                                    }
+                                }
+                                label class="manage-span2" { "Tóm tắt" input type="text" name="summary"; }
+                                button type="submit" class="manage-submit" { "Thêm hoạt động" }
+                            }
+                        }
+                    }
+
+                    // ── Đơn vị trực thuộc ────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Đơn vị trực thuộc (" (children.len()) ")" }
+                        @if children.is_empty() {
+                            p class="muted" { "Chưa có đơn vị trực thuộc." }
+                        } @else {
+                            ul class="manage-list" {
+                                @for child in children {
+                                    li {
+                                        a href=(format!("/units/{}/manage", child.id)) { (&child.name) }
+                                        span class="muted" { " · " (&child.category) }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Tạo đơn vị trực thuộc" }
+                            form method="post" action=(format!("/orgs/{}/children", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Tên đơn vị" input type="text" name="name" required; }
+                                label { "Phân loại" input type="text" name="category" placeholder="chi bộ"; }
+                                label { "Cấp (tier)" input type="number" name="tier" value=(unit.tier + 1); }
+                                label { "Tài khoản quản lý" input type="text" name="username" required; }
+                                label { "Mật khẩu" input type="text" name="password" required; }
+                                label { "Vai trò"
+                                    select name="role" {
+                                        option value="org_manager" { "Quản lý đơn vị" }
+                                        option value="root_admin" { "Quản trị hệ thống" }
+                                    }
+                                }
+                                label { "Khóa cây (APP_TREE_KEY)" input type="password" name="admin_key" required; }
+                                label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
+                                button type="submit" class="manage-submit" { "Tạo đơn vị" }
+                            }
+                        }
+                    }
+
+                    // ── Người dùng của đơn vị ────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Tài khoản gắn với đơn vị (" (unit_users.len()) ")" }
+                        @if unit_users.is_empty() {
+                            p class="muted" { "Chưa có tài khoản nào gắn trực tiếp với đơn vị này." }
+                        } @else {
+                            ul class="manage-list" {
+                                @for account in unit_users {
+                                    li {
+                                        strong { (&account.username) }
+                                        span class="muted" { " · " (account.role.as_str()) (if account.active { "" } else { " · đã khóa" }) }
+                                    }
+                                }
+                            }
+                        }
+                        @if is_root_admin {
+                            details class="manage-add" {
+                                summary { "+ Tạo tài khoản cho đơn vị này" }
+                                form method="post" action="/users" class="manage-form manage-form-grid" {
+                                    input type="hidden" name="csrf" value=(csrf);
+                                    input type="hidden" name="return_to" value=(&return_to);
+                                    input type="hidden" name="org_id" value=(&unit.id);
+                                    label { "Tài khoản" input type="text" name="username" required; }
+                                    label { "Mật khẩu" input type="text" name="password" required; }
+                                    label { "Vai trò"
+                                        select name="role" {
+                                            option value="org_manager" { "Quản lý đơn vị" }
+                                            option value="root_admin" { "Quản trị hệ thống" }
+                                        }
+                                    }
+                                    label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
+                                    button type="submit" class="manage-submit" { "Tạo tài khoản" }
+                                }
+                            }
+                        } @else {
+                            p class="muted manage-note" { "Chỉ quản trị hệ thống mới tạo được tài khoản mới." }
                         }
                     }
                 }
@@ -5407,6 +5739,74 @@ fn base_styles() -> &'static str {
         .report-letterhead-over { font-size: 0.82rem; font-weight: 700; letter-spacing: 2px; color: #8c1109; }
         .report-letterhead-title { margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: 1px; color: #111111; }
         .report-letterhead-unit { margin: 0; font-size: 0.92rem; color: #374151; }
+        body[data-panel-root="manage"] {
+            background:
+                radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.08), transparent 55%),
+                #f4f5f7 !important;
+            color: #111111;
+        }
+        .manage-shell { max-width: 1080px; margin: 0 auto; padding: 22px 18px 60px; }
+        .manage-header {
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 18px; margin-bottom: 18px;
+            background: #ffffff; border-radius: 16px;
+            border-left: 5px solid #8c1109;
+            box-shadow: 0 8px 22px rgba(17, 24, 39, 0.08);
+        }
+        .manage-emblem { width: 56px; height: 56px; }
+        .manage-header-text { display: grid; gap: 2px; margin-right: auto; }
+        .manage-over { font-size: 0.74rem; font-weight: 700; letter-spacing: 2px; color: #8c1109; }
+        .manage-title { margin: 0; font-size: 1.3rem; font-weight: 800; color: #111111; }
+        .manage-header-actions { display: flex; gap: 8px; }
+        .manage-link-btn {
+            text-decoration: none; color: #111111; background: #ffffff;
+            border: 1.5px solid #111111; border-radius: 8px;
+            padding: 7px 14px; font-size: 0.85rem; font-weight: 600; white-space: nowrap;
+        }
+        .manage-link-btn:hover { background: #111111; color: #ffffff; }
+        .manage-card {
+            background: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px;
+            padding: 18px 20px; margin-bottom: 16px;
+            box-shadow: 0 6px 16px rgba(17, 24, 39, 0.05);
+        }
+        .manage-card h2 { margin: 0 0 12px; font-size: 1.05rem; color: #111111; border-bottom: 1px solid #eef0f3; padding-bottom: 8px; }
+        .manage-table-wrap { overflow-x: auto; }
+        .manage-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .manage-table th, .manage-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+        .manage-table th { color: #6b7280; font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.4px; }
+        .manage-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+        .manage-list a { color: #1a56d6; font-weight: 600; text-decoration: none; }
+        .manage-list a:hover { text-decoration: underline; }
+        .manage-add, .manage-edit { margin-top: 12px; }
+        .manage-add > summary, .manage-edit > summary {
+            cursor: pointer; display: inline-block; font-weight: 700; color: #8c1109;
+            padding: 6px 10px; border: 1.5px dashed #8c1109; border-radius: 8px; font-size: 0.85rem;
+        }
+        .manage-edit > summary { color: #1a56d6; border-color: #b9c6e6; }
+        .manage-add[open] > summary, .manage-edit[open] > summary { margin-bottom: 10px; }
+        .manage-form-grid {
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px;
+            background: #fafbfc; border: 1px solid #eef0f3; border-radius: 12px; padding: 14px;
+        }
+        .manage-form-grid label { display: grid; gap: 4px; font-size: 0.8rem; color: #374151; font-weight: 600; }
+        .manage-form-grid input[type=text], .manage-form-grid input[type=number],
+        .manage-form-grid input[type=password], .manage-form-grid select {
+            border: 1.5px solid #cbd2dc; border-radius: 8px; padding: 8px 10px; font-size: 0.9rem; background: #ffffff; color: #111111;
+        }
+        .manage-form-grid input:focus, .manage-form-grid select:focus { outline: none; border-color: #8c1109; }
+        .manage-span2 { grid-column: 1 / -1; }
+        .manage-check { flex-direction: row; align-items: center; display: flex; gap: 8px; font-weight: 600; }
+        .manage-check input { width: 16px; height: 16px; }
+        .manage-submit {
+            grid-column: 1 / -1; justify-self: start;
+            background: #8c1109; color: #ffffff; border: 0; border-radius: 8px;
+            padding: 9px 18px; font-weight: 700; font-size: 0.88rem; cursor: pointer;
+        }
+        .manage-submit:hover { background: #a8160d; }
+        .manage-submit-sm { padding: 5px 12px; font-size: 0.8rem; }
+        .manage-inline-form { margin: 0; }
+        .manage-note { margin: 10px 0 0; font-size: 0.82rem; }
+        @media (max-width: 640px) { .manage-form-grid { grid-template-columns: 1fr; } }
         .report-word-ribbon {
             display: flex;
             flex-wrap: nowrap;
@@ -6806,6 +7206,8 @@ struct LoginForm {
 #[derive(Deserialize)]
 struct CsrfForm {
     csrf: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6819,6 +7221,8 @@ struct OrgForm {
     role: String,
     tree_key_enabled: Option<String>,
     admin_key: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6836,6 +7240,8 @@ struct MemberForm {
     phone: String,
     #[serde(default)]
     joined_at: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6845,6 +7251,8 @@ struct ActivityForm {
     year: i32,
     status: String,
     summary: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6855,6 +7263,8 @@ struct UserForm {
     role: String,
     org_id: String,
     tree_key_enabled: Option<String>,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6889,6 +7299,15 @@ struct MemberUpdateForm {
     #[serde(default)]
     notes: String,
     active: Option<String>,
+    #[serde(default)]
+    return_to: String,
+}
+
+/// Đích chuyển hướng sau khi thao tác ghi: dùng return_to nội bộ nếu hợp lệ,
+/// nếu không thì về trang chủ.
+fn redirect_back(return_to: &str) -> Response {
+    let target = sanitize_local_return_target(return_to).unwrap_or_else(|| "/".to_owned());
+    Redirect::to(&target).into_response()
 }
 
 fn normalize_sync_key(value: &str) -> Option<String> {
