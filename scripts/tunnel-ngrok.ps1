@@ -28,7 +28,10 @@ param(
     [string]$Domain     = $env:APP_NGROK_DOMAIN,
     [int]   $Port       = 18088,
     [int]   $RetryDelay = 5,
-    [string]$NgrokExe   = "ngrok"
+    [string]$NgrokExe   = "ngrok",
+    # Region giup tranh duong mang bi ISP chan (loi ERR_NGROK_3200 / connection
+    # forcibly closed). Thu: jp (Nhat), ap (Singapore), in (An Do), us, eu, au.
+    [string]$Region     = $env:APP_NGROK_REGION
 )
 
 $ErrorActionPreference = "Stop"
@@ -64,8 +67,14 @@ while ($true) {
     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Ket noi #$Attempt -> https://$Domain" -ForegroundColor Yellow
 
     # --domain : ep dung static domain co dinh (khong doi giua cac lan chay)
-    # http2-listener khong can; mac dinh ngrok tu giu keepalive + reconnect noi bo.
-    & $NgrokExe http "--domain=$Domain" $Port --log=stdout
+    # --region : chon vung edge (neu dat) de tranh duong mang bi ISP chan/RST.
+    $ngrokArgs = @("http", "--domain=$Domain")
+    if (-not [string]::IsNullOrWhiteSpace($Region)) {
+        $ngrokArgs += "--region=$Region"
+        Write-Host "    (region = $Region)" -ForegroundColor DarkGray
+    }
+    $ngrokArgs += @("$Port", "--log=stdout")
+    & $NgrokExe @ngrokArgs
 
     $Exit = $LASTEXITCODE
     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Tunnel ngat (exit=$Exit). Ket noi lai sau ${RetryDelay}s..." -ForegroundColor Red
