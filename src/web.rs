@@ -44,10 +44,6 @@ use crate::{
         can_upload_documents, default_org_user_credentials, default_root_admin_credentials,
         direct_children, is_legacy_demo_document, is_shared_document, org_sort_key,
     },
-    zk::{
-        ClientCiphertextSubmission, ExternalZkUser, StoredCiphertextDocument, ZkState,
-        ZkUserRegistration,
-    },
 };
 
 #[derive(Clone)]
@@ -109,7 +105,6 @@ struct NetworkSettings {
 struct AppState {
     data: Arc<RwLock<AppData>>,
     storage: Arc<Storage>,
-    zk_state: Arc<RwLock<ZkState>>,
     sessions: Arc<RwLock<HashMap<String, SessionState>>>,
     login_attempts: Arc<RwLock<HashMap<String, LoginAttemptState>>>,
     dashboard_tree_states: Arc<RwLock<HashMap<String, String>>>,
@@ -260,13 +255,11 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let _log_guard = setup_logging(&runtime_dir)?;
     let data_dir = runtime_dir.join("data");
-    let zk_dir = runtime_dir.join("zk");
     let key_dir = runtime_dir.join("keys");
     let dashboard_tree_state_path = data_dir.join("dashboard_tree_states.json");
     let master_key = MasterKey::load_or_create(&key_dir.join("master_key.b64"))?;
     let (kem_public_key, _kem_private_key) = load_or_create_kem_pair(&key_dir, &master_key)?;
     let storage = Arc::new(Storage::new(&data_dir, master_key)?);
-    let zk_state = Arc::new(RwLock::new(ZkState::load_or_create(&zk_dir)?));
     info!(data_dir = %data_dir.display(), key_dir = %key_dir.display(), "loading persisted application data");
     let mut data = storage.load()?;
     let mut startup_state_changed = false;
@@ -336,7 +329,6 @@ pub async fn run() -> anyhow::Result<()> {
     let state = AppState {
         data: Arc::new(RwLock::new(data)),
         storage,
-        zk_state,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         login_attempts: Arc::new(RwLock::new(HashMap::new())),
         dashboard_tree_states: Arc::new(RwLock::new(load_dashboard_tree_states(
@@ -442,15 +434,6 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
-        .route(
-            "/zk/users",
-            get(zk_public_users).post(zk_register_public_user),
-        )
-        .route(
-            "/zk/documents",
-            get(zk_documents_index).post(zk_store_ciphertext),
-        )
-        .route("/zk/documents/{id}/package", get(zk_document_package))
         .route("/service-worker.js", get(service_worker_asset))
         .route("/assets/emblem.svg", get(serve_emblem_svg))
         .route(
@@ -2999,136 +2982,6 @@ async fn download_document(
     (StatusCode::OK, headers, decrypted).into_response()
 }
 
-/// Returns the ZK user that the caller is bound to via the `display_name == username`
-/// convention. If the caller is the root admin, returns `None` so that admin code
-/// paths can choose to allow broader access.
-async fn caller_zk_user(state: &AppState, user: &User) -> Option<ExternalZkUser> {
-    state
-        .zk_state
-        .read()
-        .await
-        .public_users()
-        .iter()
-        .find(|item| item.display_name == user.username)
-        .cloned()
-}
-
-async fn zk_public_users(State(state): State<AppState>, jar: CookieJar) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let zk_state = state.zk_state.read().await;
-    let users: Vec<ExternalZkUser> = if user.role == UserRole::RootAdmin {
-        zk_state.public_users().to_vec()
-    } else {
-        zk_state
-            .public_users()
-            .iter()
-            .filter(|item| item.display_name == user.username)
-            .cloned()
-            .collect()
-    };
-    Json(users).into_response()
-}
-
-async fn zk_register_public_user(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(registration): Json<ZkUserRegistration>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if user.role != UserRole::RootAdmin && registration.display_name != user.username {
-        return (
-            StatusCode::FORBIDDEN,
-            "ZK display_name must match your username",
-        )
-            .into_response();
-    }
-    let mut zk_state = state.zk_state.write().await;
-    match zk_state.register_user(registration) {
-        Ok(zk_user) => (StatusCode::CREATED, Json(zk_user)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
-    }
-}
-
-async fn zk_documents_index(State(state): State<AppState>, jar: CookieJar) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let bound = caller_zk_user(&state, &user).await;
-    let zk_state = state.zk_state.read().await;
-    let mut documents: Vec<StoredCiphertextDocument> = if user.role == UserRole::RootAdmin {
-        zk_state.documents().to_vec()
-    } else if let Some(bound_user) = bound {
-        zk_state
-            .documents()
-            .iter()
-            .filter(|doc| doc.owner_user_id == bound_user.user_id)
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    documents.sort_by(|left, right| right.stored_at.cmp(&left.stored_at));
-    Json(documents).into_response()
-}
-
-async fn zk_store_ciphertext(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(submission): Json<ClientCiphertextSubmission>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if user.role != UserRole::RootAdmin {
-        let owner_id = submission.owner_user_id.clone();
-        let zk_state = state.zk_state.read().await;
-        let allowed = zk_state
-            .public_users()
-            .iter()
-            .any(|item| item.user_id == owner_id && item.display_name == user.username);
-        drop(zk_state);
-        if !allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                "you may only submit ciphertexts under your own ZK identity",
-            )
-                .into_response();
-        }
-    }
-    let mut zk_state = state.zk_state.write().await;
-    match zk_state.verify_and_store_submission(submission) {
-        Ok(document) => (StatusCode::CREATED, Json(document)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
-    }
-}
-
-async fn zk_document_package(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(document_id): Path<String>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let zk_state = state.zk_state.read().await;
-    let Ok(package) = zk_state.ciphertext_package(&document_id) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if user.role != UserRole::RootAdmin {
-        let allowed = zk_state.public_users().iter().any(|item| {
-            item.user_id == package.document.owner_user_id && item.display_name == user.username
-        });
-        if !allowed {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
-    Json(package).into_response()
-}
-
 async fn render_dashboard(
     state: &AppState,
     user: &User,
@@ -3716,129 +3569,6 @@ fn render_document_list(documents: &[Document], current_org_id: &str, href_prefi
     }
 }
 
-#[allow(dead_code)]
-struct ProfileDocumentNameListView<'a> {
-    current_org_id: &'a str,
-    target_unit_id: &'a str,
-    can_open: bool,
-    csrf: &'a str,
-    enable_shared_tools: bool,
-    can_upload: bool,
-    upload_kind: Option<&'a str>,
-    panel_name: &'a str,
-}
-
-#[allow(dead_code)]
-fn render_profile_document_name_list(
-    documents: &[Document],
-    view: ProfileDocumentNameListView<'_>,
-) -> Markup {
-    let ProfileDocumentNameListView {
-        current_org_id,
-        target_unit_id,
-        can_open,
-        csrf,
-        enable_shared_tools,
-        can_upload,
-        upload_kind,
-        panel_name,
-    } = view;
-    let upload_return_to = format!("/units/{}?panel={}", target_unit_id, panel_name);
-    // For shared docs: only leaf accounts (can_upload == true) may see the upload tile
-    let show_upload_empty_state = !csrf.is_empty()
-        && !target_unit_id.is_empty()
-        && upload_kind.is_some()
-        && (upload_kind != Some("shared") || can_upload);
-    html! {
-        div class="document-list-card" data-doc-unit=(current_org_id) data-doc-csrf=(csrf) {
-            @if enable_shared_tools {
-                div class="doc-list-toolbar" {
-                    span class="doc-method-col-label" {}
-                }
-            }
-            @if documents.is_empty() {
-                @if show_upload_empty_state {
-                    form
-                        method="post"
-                        action="/documents"
-                        enctype="multipart/form-data"
-                        class="profile-empty-upload-form"
-                        data-profile-upload-form="true"
-                        data-profile-upload-kind=(upload_kind.unwrap_or("unit"))
-                    {
-                        input type="hidden" name="csrf" value=(csrf);
-                        input type="hidden" name="org_id" value=(target_unit_id);
-                        input type="hidden" name="year" value={(chrono::Utc::now().year())};
-                        input type="hidden" name="return_to" value=(upload_return_to);
-                        input type="hidden" name="title" value={(if upload_kind == Some("shared") { "Tài liệu đồng bộ" } else { "Tài liệu nội bộ" })} data-profile-upload-title="true";
-                        label class="profile-empty-upload-tile" title="Tải tài liệu lên" {
-                            input type="file" name="document" class="profile-empty-upload-input" data-profile-upload-input="true" required;
-                            span class="profile-empty-upload-plus" aria-hidden="true" { "+" }
-                            span class="profile-empty-upload-copy" {
-                                (if upload_kind == Some("shared") { "Tải tài liệu đồng bộ" } else { "Tải tài liệu nội bộ" })
-                            }
-                        }
-                    }
-                } @else {
-                    p class="muted" { "Chưa có tài liệu." }
-                }
-            } @else {
-                ul class="document-name-list" {
-                    @for (idx, document) in documents.iter().enumerate() {
-                        @let short_name = profile_document_short_name(&document.file_name);
-                        li class="doc-name-row" data-doc-row=(&document.id) {
-                            span class="doc-row-num" { (idx + 1) }
-                            @if can_open {
-                                div class="doc-file-cell" {
-                                    a href={(format!("/units/{}?doc={}", target_unit_id, document.id))} class="document-link" data-profile-doc-open=(&document.id) {
-                                        span class="document-filename" title=(&document.file_name) { (short_name) }
-                                    }
-                                }
-                            } @else {
-                                div class="doc-file-cell" {
-                                    span class="document-link document-link-disabled" {
-                                        span class="document-filename" title=(&document.file_name) { (short_name) }
-                                    }
-                                }
-                            }
-                            @if enable_shared_tools {
-                                div class="doc-method-wrap" data-doc-method-wrap=(&document.id) {
-                                    button type="button" class="doc-method-pick" data-doc-method-toggle=(&document.id) title="Phương thức tổng hợp" { "▾" }
-                                    div class="doc-method-menu" data-doc-method-menu=(&document.id) hidden {
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo đơn vị" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo đơn vị" }
-                                        }
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo thứ tự tên từ a-z" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo thứ tự tên từ a-z" }
-                                        }
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo độ tuổi" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo độ tuổi" }
-                                        }
-                                    }
-                                }
-                                @if !is_derived_shared_document(document) {
-                                    div class="doc-action-wrap" style="position:relative" data-doc-wrap=(&document.id) {
-                                        button type="button" class="doc-more-btn" data-doc-more=(&document.id) title="Tuỳ chọn" { "⋮" }
-                                        div class="doc-action-bar" data-doc-bar=(&document.id) hidden {
-                                            button type="button" class="doc-act-btn doc-act-delete" data-doc-action="delete" data-act-id=(&document.id) title="Xóa" { "🗑" }
-                                            button type="button" class="doc-act-btn doc-act-rename" data-doc-action="rename" data-act-id=(&document.id) title="Sửa tên" { "🖉" }
-                                            button type="button" class="doc-act-btn doc-act-up" data-doc-action="move-up" data-act-id=(&document.id) title="Di chuyển lên" { "↑" }
-                                            button type="button" class="doc-act-btn doc-act-down" data-doc-action="move-down" data-act-id=(&document.id) title="Di chuyển xuống" { "↓" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn render_quick_document_preview(
     document: &Document,
     current_org: Option<&Organization>,
@@ -3857,11 +3587,6 @@ fn render_quick_document_preview(
             }
         }
     }
-}
-
-#[allow(dead_code)]
-fn profile_document_short_name(file_name: &str) -> String {
-    file_name.chars().take(12).collect()
 }
 
 #[derive(Serialize)]
@@ -7333,10 +7058,9 @@ mod tests {
         models::{Document, Organization, User, UserRole, now_string},
         storage::Storage,
         web::{
-            ProfileAccess, profile_access, render_profile_document_name_list, tree_visible_ids,
+            ProfileAccess, profile_access, tree_visible_ids,
             visible_org_ids,
         },
-        zk::ZkState,
     };
     use axum::{
         body::{Body, to_bytes},
@@ -7389,9 +7113,6 @@ mod tests {
             state: AppState {
                 data: Arc::new(RwLock::new(data)),
                 storage,
-                zk_state: Arc::new(RwLock::new(
-                    ZkState::load_or_create(base_dir.join("zk")).expect("zk state"),
-                )),
                 sessions: Arc::new(RwLock::new(HashMap::new())),
                 login_attempts: Arc::new(RwLock::new(HashMap::new())),
                 dashboard_tree_states: Arc::new(RwLock::new(HashMap::new())),
@@ -8212,47 +7933,6 @@ mod tests {
         assert_eq!(bytes.as_ref(), plaintext);
     }
 
-    #[test]
-    fn empty_profile_document_panel_renders_plus_upload_tile() {
-        let shared_markup = render_profile_document_name_list(
-            &[],
-            super::ProfileDocumentNameListView {
-                current_org_id: "org-doc-leaf",
-                target_unit_id: "org-doc-leaf",
-                can_open: true,
-                csrf: "csrf-token",
-                enable_shared_tools: true,
-                can_upload: true,
-                upload_kind: Some("shared"),
-                panel_name: "branch-docs",
-            },
-        )
-        .into_string();
-        assert!(shared_markup.contains("data-profile-upload-form=\"true\""));
-        assert!(shared_markup.contains("data-profile-upload-kind=\"shared\""));
-        assert!(shared_markup.contains("/units/org-doc-leaf?panel=branch-docs"));
-        assert!(shared_markup.contains("Tải tài liệu đồng bộ"));
-        assert!(shared_markup.contains(">+<"));
-
-        let unit_markup = render_profile_document_name_list(
-            &[],
-            super::ProfileDocumentNameListView {
-                current_org_id: "org-doc-leaf",
-                target_unit_id: "org-doc-leaf",
-                can_open: true,
-                csrf: "csrf-token",
-                enable_shared_tools: false,
-                can_upload: true,
-                upload_kind: Some("unit"),
-                panel_name: "unit-docs",
-            },
-        )
-        .into_string();
-        assert!(unit_markup.contains("data-profile-upload-kind=\"unit\""));
-        assert!(unit_markup.contains("/units/org-doc-leaf?panel=unit-docs"));
-        assert!(unit_markup.contains("Tải tài liệu nội bộ"));
-    }
-
     #[tokio::test]
     async fn superior_sync_receives_updated_descendant_document_delta() {
         let harness = test_harness(NetworkMode::InternetTest);
@@ -8571,119 +8251,6 @@ mod tests {
         assert_eq!(rows[2][0], "2");
         assert_eq!(rows[3][0], "3");
         assert!(!aggregated.contains("DANH SACH"), "tựa đề con phải bị loại bỏ");
-    }
-
-    #[tokio::test]
-    async fn zk_lane_full_http_round_trip() {
-        use crate::zk::{
-            CiphertextDocumentPackage, ExternalZkUser, StoredCiphertextDocument,
-            create_client_identity, create_prepared_submission, decrypt_ciphertext_package,
-        };
-
-        let harness = test_harness(NetworkMode::InternetTest);
-        let app = build_router(harness.state.clone());
-        let (session_id, _csrf) =
-            login_and_get_session(&app, &harness.state, "admin", "admin").await;
-        let session_cookie = cookie_header(&session_id);
-
-        // Unauthenticated callers must be redirected away from /zk/lab.
-        let unauth = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/zk/lab")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(unauth.status(), StatusCode::SEE_OTHER);
-
-        // Register an external XMSS identity through /zk/users.
-        let mut identity = create_client_identity("HTTP Tester").expect("identity");
-        let registration_body = serde_json::json!({
-            "display_name": identity.display_name,
-            "xmss_public_key_b64": identity.xmss_public_key_b64,
-        });
-        let register_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/zk/users")
-                    .header(header::COOKIE, &session_cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&registration_body).unwrap()))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(register_response.status(), StatusCode::CREATED);
-        let registered: ExternalZkUser = serde_json::from_slice(
-            &to_bytes(register_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("user json");
-        identity.server_user_id = Some(registered.user_id.clone());
-
-        // Submit an encrypted ciphertext package signed with XMSS.
-        let plaintext = b"site only ever sees ciphertext";
-        let prepared = create_prepared_submission(
-            &mut identity,
-            &registered.user_id,
-            "HTTP demo",
-            "http-demo.txt",
-            "text/plain",
-            plaintext,
-        )
-        .expect("prepared submission");
-        let submit_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/zk/documents")
-                    .header(header::COOKIE, &session_cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&prepared.submission).unwrap(),
-                    ))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(submit_response.status(), StatusCode::CREATED);
-        let stored: StoredCiphertextDocument = serde_json::from_slice(
-            &to_bytes(submit_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("stored doc json");
-        assert_eq!(stored.xmss_signature_idx, 0);
-
-        // Fetch the package back and decrypt it locally with the client's key.
-        let package_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/zk/documents/{}/package", stored.document_id))
-                    .header(header::COOKIE, &session_cookie)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(package_response.status(), StatusCode::OK);
-        let package: CiphertextDocumentPackage = serde_json::from_slice(
-            &to_bytes(package_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("package json");
-        let decrypted =
-            decrypt_ciphertext_package(&package, &prepared.decryption_key_b64).expect("decrypt");
-        assert_eq!(decrypted.as_slice(), plaintext);
     }
 }
 
