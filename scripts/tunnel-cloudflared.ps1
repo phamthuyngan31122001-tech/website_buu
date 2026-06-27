@@ -27,10 +27,25 @@ param(
     [int]   $RetryDelay    = 5,
     [string]$CloudflaredExe = "cloudflared",
     # De trong = quick tunnel (trycloudflare.com). Dat ten = named tunnel co dinh.
-    [string]$TunnelName    = ""
+    [string]$TunnelName    = "",
+    # Neu may ra internet QUA PROXY: dat proxy (http://user:pass@host:port).
+    # Cloudflare ho tro proxy MIEN PHI nhung phai ep --protocol http2 (mac dinh
+    # dung QUIC/UDP khong qua duoc HTTP proxy). Script tu them http2 khi co proxy.
+    [string]$Proxy         = $env:APP_TUNNEL_PROXY
 )
 
 $ErrorActionPreference = "Stop"
+
+# Cloudflare doc HTTPS_PROXY/HTTP_PROXY (kem --protocol http2) de noi qua proxy.
+$UseHttp2 = $false
+if (-not [string]::IsNullOrWhiteSpace($Proxy)) {
+    $env:HTTPS_PROXY = $Proxy
+    $env:HTTP_PROXY  = $Proxy
+    $env:https_proxy = $Proxy
+    $env:http_proxy  = $Proxy
+    $UseHttp2 = $true
+    Write-Host "Dung proxy: $Proxy  (ep --protocol http2)" -ForegroundColor DarkGray
+}
 
 # Tim cloudflared
 $cf = (Get-Command $CloudflaredExe -ErrorAction SilentlyContinue)
@@ -58,10 +73,13 @@ while ($true) {
     Write-Host ""
     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Ket noi #$Attempt ..." -ForegroundColor Yellow
 
+    $proto = @()
+    if ($UseHttp2) { $proto = @("--protocol", "http2") }
+
     if ([string]::IsNullOrWhiteSpace($TunnelName)) {
-        & $CloudflaredExe tunnel --url "http://127.0.0.1:$Port"
+        & $CloudflaredExe tunnel @proto --url "http://127.0.0.1:$Port"
     } else {
-        & $CloudflaredExe tunnel run --url "http://127.0.0.1:$Port" $TunnelName
+        & $CloudflaredExe tunnel @proto run --url "http://127.0.0.1:$Port" $TunnelName
     }
 
     $Exit = $LASTEXITCODE
