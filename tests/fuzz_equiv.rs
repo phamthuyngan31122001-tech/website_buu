@@ -3,6 +3,7 @@
 /// cargo-fuzz (libFuzzer) requires Linux/macOS; these tests replicate the same
 /// security-critical code paths using `proptest` so they run on Windows MSVC.
 use proptest::prelude::*;
+use website_buu::crypto::MasterKey;
 use website_buu::hybird::{
     decrypt_document, decrypt_transport_payload, encrypt_document, load_or_create_kem_pair,
 };
@@ -11,7 +12,9 @@ use website_buu::hybird::{
 
 fn keypair() -> (String, String) {
     let dir = std::env::temp_dir().join("website_buu_proptest_keys");
-    load_or_create_kem_pair(&dir).expect("generate hybrid keypair")
+    let master_key =
+        MasterKey::load_or_create(&dir.join("master_key.b64")).expect("master key");
+    load_or_create_kem_pair(&dir, &master_key).expect("generate hybrid keypair")
 }
 
 // ── fuzz_target_1 equivalent: arbitrary bytes must never panic ────────────────
