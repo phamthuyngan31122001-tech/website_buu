@@ -8355,6 +8355,44 @@ mod tests {
         assert_eq!(f_docs[1].preview_text, e_docs[1].preview_text);
     }
 
+    #[test]
+    fn aggregate_keeps_single_header_when_children_have_title_rows() {
+        let make_doc = |id: &str, org: &str, body_name: &str| super::Document {
+            id: id.to_owned(),
+            org_id: org.to_owned(),
+            title: org.to_owned(),
+            file_name: format!("{org}.xlsx"),
+            mime_type: "text/plain".to_owned(),
+            preview_text: format!(
+                "DANH SACH {org}\nSTT\tHo ten\tCap bac\n1\t{body_name}\tCap uy"
+            ),
+            year: 2026,
+            encrypted_path: String::new(),
+            kem_ciphertext_b64: String::new(),
+            nonce_b64: String::new(),
+            uploaded_at: "2026-01-01".to_owned(),
+            updated_at: "2026-01-01".to_owned(),
+        };
+        let slot_docs = vec![
+            ("c1".to_owned(), make_doc("d1", "c1", "Nguyen Van A")),
+            ("c2".to_owned(), make_doc("d2", "c2", "Tran Thi B")),
+            ("c3".to_owned(), make_doc("d3", "c3", "Le Van C")),
+        ];
+
+        let aggregated = super::aggregate_shared_slot_preview(&slot_docs, "Theo đơn vị");
+        let rows = super::parse_preview_rows(&aggregated);
+
+        // Đúng 1 dòng tiêu đề ở trên cùng + 3 dòng dữ liệu, không còn tựa đề/ tiêu đề lặp.
+        let header_count = rows.iter().filter(|row| super::looks_like_header_row(row)).count();
+        assert_eq!(header_count, 1, "phải chỉ còn 1 dòng tiêu đề: {rows:?}");
+        assert_eq!(rows.len(), 4, "1 tiêu đề + 3 dữ liệu: {rows:?}");
+        assert!(super::looks_like_header_row(&rows[0]));
+        assert_eq!(rows[1][0], "1");
+        assert_eq!(rows[2][0], "2");
+        assert_eq!(rows[3][0], "3");
+        assert!(!aggregated.contains("DANH SACH"), "tựa đề con phải bị loại bỏ");
+    }
+
     #[tokio::test]
     async fn zk_lane_full_http_round_trip() {
         use crate::zk::{
@@ -9130,28 +9168,79 @@ fn extract_age_value(row: &[String]) -> i32 {
     best
 }
 
+/// Các từ khóa nhận diện dòng tiêu đề cột trong một bảng danh sách.
+const HEADER_ROW_KEYWORDS: &[&str] = &[
+    "stt",
+    "sothutu",
+    "hoten",
+    "hovaten",
+    "ngaysinh",
+    "sinhngay",
+    "namsinh",
+    "trinhdo",
+    "capbac",
+    "chucvu",
+    "hoatdongcuadonvi",
+    "mucdohoanthanhnhiemvu",
+    "diachi",
+    "sodienthoai",
+    "ngayvaotochuc",
+    "donvi",
+    "quequan",
+];
+
+/// Một dòng được coi là dòng tiêu đề nếu có từ 2 ô trở lên khớp với từ khóa tiêu đề.
+/// Ngưỡng 2 ô giúp tránh nhầm dòng dữ liệu (ví dụ ô tên người) thành tiêu đề.
+fn looks_like_header_row(row: &[String]) -> bool {
+    row.iter()
+        .filter(|cell| {
+            let key = normalize_header_key(cell);
+            !key.is_empty() && HEADER_ROW_KEYWORDS.contains(&key.as_str())
+        })
+        .count()
+        >= 2
+}
+
 fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str) -> String {
     let canonical = method.trim().to_ascii_lowercase();
 
-    if canonical.contains("a-z") || canonical.contains("tên") {
-        let mut header: Option<Vec<String>> = None;
-        let mut body_rows: Vec<Vec<String>> = Vec::new();
-        for (_, document) in slot_docs {
-            let rows = parse_preview_rows(&document.preview_text);
-            if rows.is_empty() {
-                continue;
-            }
-            if header.is_none() {
-                header = rows.first().cloned();
-            }
-            body_rows.extend(rows.into_iter().skip(1));
+    // Gom dữ liệu từ nhiều đơn vị con: chỉ giữ DUY NHẤT một dòng tiêu đề ở trên cùng.
+    // Mỗi tài liệu con có thể có dòng tựa đề phía trên dòng tiêu đề cột; ta dò đúng
+    // dòng tiêu đề theo nội dung, bỏ phần tựa đề và mọi dòng tiêu đề bị lặp lại.
+    let mut header: Option<Vec<String>> = None;
+    let mut body_rows: Vec<Vec<String>> = Vec::new();
+    for (_, document) in slot_docs {
+        let rows = parse_preview_rows(&document.preview_text);
+        if rows.is_empty() {
+            continue;
         }
+        match rows.iter().position(|row| looks_like_header_row(row)) {
+            Some(header_idx) => {
+                if header.is_none() {
+                    header = Some(rows[header_idx].clone());
+                }
+                for (index, row) in rows.into_iter().enumerate() {
+                    // Bỏ phần tựa đề (đứng trước tiêu đề), bỏ chính dòng tiêu đề,
+                    // và bỏ mọi dòng tiêu đề lặp lại nằm trong phần thân.
+                    if index <= header_idx || looks_like_header_row(&row) {
+                        continue;
+                    }
+                    body_rows.push(row);
+                }
+            }
+            None => {
+                // Không dò được tiêu đề: coi dòng đầu là tiêu đề (giữ hành vi cũ).
+                if header.is_none() {
+                    header = rows.first().cloned();
+                }
+                body_rows.extend(rows.into_iter().skip(1));
+            }
+        }
+    }
+
+    if canonical.contains("a-z") || canonical.contains("tên") {
         body_rows.sort_by(|left, right| {
-            let left_key = left
-                .first()
-                .cloned()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let left_key = left.first().cloned().unwrap_or_default().to_ascii_lowercase();
             let right_key = right
                 .first()
                 .cloned()
@@ -9159,58 +9248,15 @@ fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str)
                 .to_ascii_lowercase();
             left_key.cmp(&right_key)
         });
-        let mut merged = Vec::new();
-        if let Some(head) = header {
-            merged.push(head);
-        }
-        merged.extend(body_rows);
-        renumber_stt_column(&mut merged);
-        collapse_unit_activity_column(&mut merged);
-        return serialize_preview_rows(&merged);
-    }
-
-    if canonical.contains("độ tuổi") || canonical.contains("tuoi") {
-        let mut header: Option<Vec<String>> = None;
-        let mut body_rows: Vec<Vec<String>> = Vec::new();
-        for (_, document) in slot_docs {
-            let rows = parse_preview_rows(&document.preview_text);
-            if rows.is_empty() {
-                continue;
-            }
-            if header.is_none() {
-                header = rows.first().cloned();
-            }
-            body_rows.extend(rows.into_iter().skip(1));
-        }
+    } else if canonical.contains("độ tuổi") || canonical.contains("tuoi") {
         body_rows.sort_by_key(|row| extract_age_value(row));
-        let mut merged = Vec::new();
-        if let Some(head) = header {
-            merged.push(head);
-        }
-        merged.extend(body_rows);
-        renumber_stt_column(&mut merged);
-        collapse_unit_activity_column(&mut merged);
-        return serialize_preview_rows(&merged);
     }
 
-    let mut header: Option<Vec<String>> = None;
-    let mut merged: Vec<Vec<String>> = Vec::new();
-    for (_, document) in slot_docs {
-        let rows = parse_preview_rows(&document.preview_text);
-        if rows.is_empty() {
-            continue;
-        }
-        if header.is_none() {
-            header = rows.first().cloned();
-            if let Some(head) = header.clone() {
-                merged.push(head);
-            }
-            merged.extend(rows.into_iter().skip(1));
-            continue;
-        }
-
-        merged.extend(rows.into_iter().skip(1));
+    let mut merged = Vec::new();
+    if let Some(head) = header {
+        merged.push(head);
     }
+    merged.extend(body_rows);
     renumber_stt_column(&mut merged);
     collapse_unit_activity_column(&mut merged);
     serialize_preview_rows(&merged)
