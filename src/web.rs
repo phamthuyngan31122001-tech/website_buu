@@ -3541,6 +3541,8 @@ fn report_bucket_summary(title: &str, buckets: &[DashboardReportBucket]) -> (Str
             }
             _ => "Cơ cấu độ tuổi tập trung ở các nhóm còn lại.".to_owned(),
         }
+    } else if positive.len() == 1 {
+        "Toàn bộ dữ liệu tập trung ở một nhóm duy nhất.".to_owned()
     } else if let Some(lowest) = positive.last() {
         format!(
             "Nhóm thấp nhất có dữ liệu là {} với {} thành viên, chiếm {}%.",
@@ -3583,6 +3585,14 @@ fn render_report_pie_chart(title: &str, buckets: &[DashboardReportBucket]) -> Ma
 fn render_report_document(record: &DashboardReportUnitRecord) -> Markup {
     html! {
         article class="report-document" {
+            header class="report-letterhead" {
+                div class="report-letterhead-emblem" aria-hidden="true" {}
+                div class="report-letterhead-text" {
+                    span class="report-letterhead-over" { "QUÂN KHU 5" }
+                    h2 class="report-letterhead-title" { "BÁO CÁO TỔNG HỢP" }
+                    p class="report-letterhead-unit" { "Đơn vị: " (&record.name) }
+                }
+            }
             dl {
                 div { dt { "Tên đơn vị" } dd { (&record.name) } }
                 div { dt { "Số lượng thành viên" } dd { (record.member_count) } }
@@ -5648,6 +5658,24 @@ fn base_styles() -> &'static str {
         .report-tab-bar + .report-edit-surface { border-radius: 0 0 10px 10px; }
         .report-edit-surface.is-editing { border-color: #111111; box-shadow: inset 0 0 0 1px #111111; }
         .report-document { color: #111111; background: #ffffff; display: grid; gap: 12px; line-height: 1.45; font-family: "Times New Roman", Times, serif; }
+        .report-letterhead {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 6px 4px 14px;
+            border-bottom: 2.5px solid #8c1109;
+            margin-bottom: 4px;
+        }
+        .report-letterhead-emblem {
+            flex: 0 0 64px;
+            width: 64px;
+            height: 64px;
+            background: url("/assets/emblem.svg") center / contain no-repeat;
+        }
+        .report-letterhead-text { display: grid; gap: 2px; }
+        .report-letterhead-over { font-size: 0.82rem; font-weight: 700; letter-spacing: 2px; color: #8c1109; }
+        .report-letterhead-title { margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: 1px; color: #111111; }
+        .report-letterhead-unit { margin: 0; font-size: 0.92rem; color: #374151; }
         .report-word-ribbon {
             display: flex;
             flex-wrap: nowrap;
