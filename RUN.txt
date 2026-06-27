@@ -16,13 +16,29 @@ $env:AWS_LC_SYS_NO_ASM="1"
 ✓ Kiểm tra: curl http://127.0.0.1:18088 → HTTP 200
 
 
-🌐 BƯỚC 2 - (Tùy chọn) Đưa lên Internet (Terminal 2):
+🌐 BƯỚC 2 - Đưa lên Internet với LINK CỐ ĐỊNH VĨNH VIỄN (khuyến nghị):
 ────────────────────────────────────────────────────────────────
-powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1
+Dùng ngrok + static domain miễn phí -> URL KHÔNG đổi sau mỗi lần chạy.
 
-📍 URL công khai cố định hiện tại: https://e02430ace65840.lhr.life/
-✓ Đã kiểm tra sau khi restart tunnel: vẫn trả HTTP 200
-⚠️  Link cũ https://38c26531b059f2.lhr.life/ hiện trả 503, không còn được localhost.run giữ cho tunnel này
+Chuẩn bị 1 lần:
+  1) Đăng ký: https://dashboard.ngrok.com/signup
+  2) Tải ngrok: https://ngrok.com/download (đặt ngrok.exe vào PATH)
+  3) ngrok config add-authtoken <TOKEN>
+     (lấy ở https://dashboard.ngrok.com/get-started/your-authtoken)
+  4) Tạo static domain miễn phí (1 cái/tài khoản):
+     https://dashboard.ngrok.com/cloud-edge/domains -> "Create Domain"
+
+Chạy (Terminal 2):
+  powershell -ExecutionPolicy Bypass -File scripts\tunnel-ngrok.ps1 -Domain <domain-cua-ban>
+
+📍 URL công khai CỐ ĐỊNH: https://<domain-cua-ban>   (vd https://quan-khu-5.ngrok-free.app)
+✓ URL này KHÔNG đổi dù tunnel rớt và tự kết nối lại -> ổn định lâu dài.
+
+────────────────────────────────────────────────────────────────
+(Cách cũ) localhost.run — KHÔNG khuyến nghị nếu cần link ổn định:
+  powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1
+⚠️  Bản miễn phí localhost.run cấp URL *.lhr.life NGẪU NHIÊN mới mỗi lần
+    kết nối lại và hay ngắt -> link đổi liên tục, KHÔNG cố định được.
 
 
 🔐 ĐĂNG NHẬP MẶC ĐỊNH:
