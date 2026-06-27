@@ -73,13 +73,14 @@ while ($true) {
     Write-Host ""
     Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Ket noi #$Attempt ..." -ForegroundColor Yellow
 
-    $proto = @()
-    if ($UseHttp2) { $proto = @("--protocol", "http2") }
+    # Co dinh giao thuc + tang do ben khi proxy hay cat ket noi dai.
+    $common = @("--no-autoupdate", "--retries", "10", "--grace-period", "30s")
+    if ($UseHttp2) { $common = @("--protocol", "http2") + $common }
 
     if ([string]::IsNullOrWhiteSpace($TunnelName)) {
-        & $CloudflaredExe tunnel @proto --url "http://127.0.0.1:$Port"
+        & $CloudflaredExe tunnel @common --url "http://127.0.0.1:$Port"
     } else {
-        & $CloudflaredExe tunnel @proto run --url "http://127.0.0.1:$Port" $TunnelName
+        & $CloudflaredExe tunnel @common run --url "http://127.0.0.1:$Port" $TunnelName
     }
 
     $Exit = $LASTEXITCODE
