@@ -86,9 +86,11 @@ while ($true) {
     }
 
     if ([string]::IsNullOrWhiteSpace($TunnelName)) {
+        # Quick tunnel: co cac flag tren `tunnel ... --url`
         & $CloudflaredExe tunnel @common --url "http://127.0.0.1:$Port"
     } else {
-        & $CloudflaredExe tunnel @common run --url "http://127.0.0.1:$Port" $TunnelName
+        # Named tunnel: cac flag phai dat SAU `run`
+        & $CloudflaredExe tunnel run @common --url "http://127.0.0.1:$Port" $TunnelName
     }
 
     $Exit = $LASTEXITCODE
