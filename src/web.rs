@@ -436,6 +436,8 @@ fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/service-worker.js", get(service_worker_asset))
         .route("/assets/emblem.svg", get(serve_emblem_svg))
+        .route("/favicon.ico", get(serve_emblem_svg))
+        .route("/favicon.svg", get(serve_emblem_svg))
         .route(
             &format!("/assets/{}", assets.base_css_filename),
             get(serve_base_css),
@@ -3059,6 +3061,7 @@ async fn render_dashboard(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Website nội bộ tổ chức" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -3214,6 +3217,7 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (format!("Đơn vị {}", unit.name)) }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().profile_js_url) defer {}
@@ -3929,6 +3933,7 @@ fn render_document_manager_page(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Quản lý tài liệu" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -3995,6 +4000,7 @@ fn render_login(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Đăng nhập hệ thống nội bộ" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().login_js_url) defer {}
