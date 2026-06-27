@@ -9231,7 +9231,6 @@ fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str)
             continue;
         }
 
-        let current_header = rows.first().cloned().unwrap_or_default();
         merged.extend(rows.into_iter().skip(1));
     }
     renumber_stt_column(&mut merged);

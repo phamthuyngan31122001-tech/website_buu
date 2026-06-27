@@ -11,7 +11,8 @@ use website_buu::hybird::{
 
 fn keypair() -> (String, String) {
     let dir = std::env::temp_dir().join("website_buu_proptest_keys");
-    load_or_create_kem_pair(&dir).expect("generate hybrid keypair")
+    let master_key = website_buu::crypto::MasterKey([7_u8; 32]);
+    load_or_create_kem_pair(&dir, &master_key).expect("generate hybrid keypair")
 }
 
 // ── fuzz_target_1 equivalent: arbitrary bytes must never panic ────────────────
