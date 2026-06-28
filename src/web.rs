@@ -3074,14 +3074,8 @@ async fn render_dashboard(
             }
             body data-panel-root="dashboard" data-initial-panel=(initial_panel) data-sync-username=(&user.username) data-tree-edit-admin=(user.role == UserRole::RootAdmin) data-tree-csrf=(&csrf) data-dashboard-org-id=(dashboard_org.as_ref().map(|org| org.id.as_str()).unwrap_or_default()) {
                 main class="shell command-shell" {
+                    img class="site-top-banner dashboard-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
                     section class="graph-stage minimal-stage" {
-                        div class="stage-brand" {
-                            img class="stage-brand-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="46" height="46";
-                            div class="stage-brand-text" {
-                                span class="stage-brand-title" { "HỆ THỐNG NỘI BỘ" }
-                                span class="stage-brand-sub" { "Quân khu 5" }
-                            }
-                        }
                         div class="floating-controls" {
                             div class="top-control-row" {
                                 div class="panel-shell" data-panel="settings" {
@@ -4096,12 +4090,9 @@ fn render_login(
                 script src=(static_assets().login_js_url) defer {}
             }
             body data-panel-root="login" {
+                img class="site-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
-                        div class="login-brand" {
-                            img class="login-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="64" height="64";
-                            h1 class="login-brand-title" { "Hệ thống quản lý quần chúng Quân khu 5" }
-                        }
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
                             p class="login-wait-message" data-login-wait-message="true" { (message) }
                         }
@@ -4349,33 +4340,20 @@ fn base_styles() -> &'static str {
             place-items: center;
         }
         body[data-panel-root="login"] {
-            background:
-                linear-gradient(rgba(246, 247, 249, 0.82), rgba(246, 247, 249, 0.82)),
-                url("/assets/site-bg.png") center center / cover no-repeat,
-                radial-gradient(circle at 50% 18%, rgba(209, 31, 31, 0.06), transparent 42%),
-                radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.10), transparent 55%),
-                #f6f7f9 !important;
+            background: #f6f7f9 !important;
             color: #111111;
         }
-        .login-brand {
-            display: grid;
-            justify-items: center;
-            gap: 6px;
-            margin-bottom: 10px;
-            text-align: center;
+        /* Banner ảnh nền trên cùng: rộng bằng trang, vừa vặn, không tràn */
+        .site-top-banner {
+            display: block;
+            width: 100%;
+            max-width: 100%;
+            height: auto;
+            object-fit: contain;
         }
-        .login-emblem {
-            width: 64px;
-            height: 64px;
-            filter: drop-shadow(0 4px 10px rgba(140, 17, 9, 0.25));
-        }
-        .login-brand-title {
-            margin: 8px 0 0;
-            font-size: 17px;
-            font-weight: 800;
-            line-height: 1.3;
-            color: #8c1109;
-            max-width: 300px;
+        body[data-panel-root="login"] .login-shell {
+            min-height: auto;
+            padding-top: 40px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -4392,54 +4370,16 @@ fn base_styles() -> &'static str {
             border-radius: 32px;
             overflow: hidden;
             border: 1px solid #e5e7eb;
-            background:
-                url("/assets/emblem.svg") center center / 360px no-repeat,
-                url("/assets/site-bg.png") center center / cover no-repeat,
-                #ffffff;
+            background: #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
         }
-        .graph-stage::after {
-            content: "";
-            position: absolute;
-            inset: 0;
-            background: rgba(255, 255, 255, 0.86);
-            pointer-events: none;
-            z-index: 0;
-        }
-        .graph-stage > * { position: relative; z-index: 1; }
-        .stage-brand {
-            position: absolute;
-            left: 20px;
-            bottom: 18px;
-            z-index: 5;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 14px 8px 10px;
-            background: rgba(255, 255, 255, 0.82);
-            border: 1px solid rgba(140, 17, 9, 0.18);
-            border-radius: 14px;
+        /* Banner ảnh nền đầu trang dashboard: rõ ràng, rộng bằng trang */
+        .dashboard-top-banner {
+            border-radius: 16px;
+            margin-bottom: 12px;
             box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
-            backdrop-filter: blur(6px);
         }
-        .stage-brand-emblem {
-            width: 46px;
-            height: 46px;
-            filter: drop-shadow(0 2px 5px rgba(140, 17, 9, 0.25));
-        }
-        .stage-brand-text { display: grid; line-height: 1.15; }
-        .stage-brand-title {
-            font-size: 12.5px;
-            font-weight: 800;
-            letter-spacing: 1px;
-            color: #8c1109;
-        }
-        .stage-brand-sub { font-size: 11px; color: #6b7280; letter-spacing: 0.4px; }
-        @media (max-width: 720px) {
-            .stage-brand { left: 12px; bottom: 12px; padding: 6px 10px 6px 8px; }
-            .stage-brand-emblem { width: 36px; height: 36px; }
-        }
-        .minimal-stage { min-height: calc(100vh - 28px); }
+        .minimal-stage { min-height: calc(100vh - 320px); }
         .floating-controls {
             position: absolute;
             top: 18px;
