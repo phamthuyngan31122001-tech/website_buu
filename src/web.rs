@@ -194,12 +194,16 @@ struct DashboardReportUnitRecord {
     name: String,
     tier: u32,
     member_count: usize,
-    new_member_count: usize,
-    age_buckets: Vec<DashboardReportBucket>,
-    education_buckets: Vec<DashboardReportBucket>,
-    completion_buckets: Vec<DashboardReportBucket>,
-    rank_buckets: Vec<DashboardReportBucket>,
+    // Báo cáo bám theo BẢNG của chính đơn vị: mỗi cột dữ liệu là một nhóm phân
+    // tích (tỉ lệ % theo giá trị). Tên cột lấy đúng theo tiêu đề bảng đơn vị.
+    columns: Vec<DashboardReportColumn>,
     activities: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DashboardReportColumn {
+    name: String,
+    buckets: Vec<DashboardReportBucket>,
 }
 
 #[derive(Serialize)]
@@ -208,13 +212,6 @@ struct DashboardReportBucket {
     value: usize,
 }
 
-struct UploadedReportMemberRow {
-    birth_date: String,
-    education: String,
-    rank: String,
-    completion: String,
-    activity: String,
-}
 
 #[derive(Deserialize, Default)]
 struct SyncQuery {
@@ -1042,43 +1039,6 @@ fn json_value_for_inline_script<T: Serialize>(value: &T) -> String {
         .replace('&', "\\u0026")
 }
 
-fn parse_date_year(value: &str) -> Option<i32> {
-    value.get(0..4)?.parse::<i32>().ok()
-}
-
-fn member_age(member: &Member) -> Option<i32> {
-    let birth_year = parse_date_year(&member.birth_date)?;
-    Some(Utc::now().year() - birth_year)
-}
-
-fn bucket_vec(labels: &[&str], counts: &HashMap<String, usize>) -> Vec<DashboardReportBucket> {
-    labels
-        .iter()
-        .map(|label| DashboardReportBucket {
-            label: (*label).to_owned(),
-            value: *counts.get(*label).unwrap_or(&0),
-        })
-        .collect()
-}
-
-fn education_bucket(member: &Member) -> &'static str {
-    match member.year.rem_euclid(4) {
-        0 => "Đại học",
-        1 => "Sau đại học",
-        2 => "Cao đẳng",
-        _ => "Trung cấp",
-    }
-}
-
-fn rank_bucket(member: &Member) -> &'static str {
-    match member.title.as_str() {
-        "Bí thư" => "Bí thư",
-        "Phó bí thư" => "Phó bí thư",
-        "Chủ tịch" => "Chủ tịch",
-        _ => "Ủy viên",
-    }
-}
-
 fn normalize_report_header(value: &str) -> String {
     value
         .trim()
@@ -1087,274 +1047,103 @@ fn normalize_report_header(value: &str) -> String {
         .replace(' ', "")
 }
 
-fn normalize_report_value(value: &str) -> String {
-    normalize_report_header(value).replace('-', "")
-}
-
-fn canonical_report_bucket(value: &str, allowed: &[&str]) -> String {
-    let key = normalize_report_value(value);
-    allowed
-        .iter()
-        .find(|label| normalize_report_value(label) == key)
-        .map(|label| (*label).to_owned())
-        .unwrap_or_else(|| value.trim().to_owned())
-}
-
-fn report_rows_from_preview(preview: &str) -> Vec<UploadedReportMemberRow> {
-    let rows = parse_preview_rows(preview);
-    let Some(header) = rows.first() else {
+/// Lấy BẢNG của chính đơn vị (tài liệu hiệu lực: bản gốc của đơn vị lá hoặc
+/// bảng tổng hợp của cấp trên) để dựng báo cáo bám theo đúng cột dữ liệu.
+fn unit_report_table(org: &Organization, data: &AppData) -> Vec<Vec<String>> {
+    let mut cache = HashMap::new();
+    let docs =
+        effective_shared_documents_cached(&data.organizations, &data.documents, &org.id, &mut cache);
+    let Some(doc) = docs.first() else {
         return Vec::new();
     };
-    let mut columns = HashMap::new();
-    for (index, cell) in header.iter().enumerate() {
-        columns.insert(normalize_report_header(cell), index);
-    }
-    let full_name_key = normalize_report_header("Họ tên");
-    let full_name_alt_key = normalize_report_header("Họ và tên");
-    let birth_date_key = normalize_report_header("Sinh ngày");
-    let education_key = normalize_report_header("Trình độ");
-    let rank_key = normalize_report_header("Cấp bậc");
-    let completion_key = normalize_report_header("Mức độ hoàn thành nhiệm vụ");
-    let activity_key = normalize_report_header("Hoạt động của đơn vị");
-    let has_full_name =
-        columns.contains_key(&full_name_key) || columns.contains_key(&full_name_alt_key);
-    let required = [
-        &birth_date_key,
-        &education_key,
-        &rank_key,
-        &completion_key,
-        &activity_key,
-    ];
-    if !has_full_name || required.iter().any(|key| !columns.contains_key(*key)) {
-        return Vec::new();
-    }
-    let cell_at = |row: &[String], key: &str| -> String {
-        columns
-            .get(key)
-            .and_then(|index| row.get(*index))
-            .map(|value| value.trim().to_owned())
-            .unwrap_or_default()
-    };
-    rows.into_iter()
-        .skip(1)
-        .filter(|row| row.iter().any(|cell| !cell.trim().is_empty()))
-        .map(|row| UploadedReportMemberRow {
-            birth_date: cell_at(&row, &birth_date_key),
-            education: cell_at(&row, &education_key),
-            rank: cell_at(&row, &rank_key),
-            completion: cell_at(&row, &completion_key),
-            activity: cell_at(&row, &activity_key),
-        })
-        .collect()
+    parse_preview_rows(&doc.preview_text)
 }
 
-fn report_rows_from_documents(org: &Organization, data: &AppData) -> Vec<UploadedReportMemberRow> {
-    let mut scope_ids = descendant_ids(&data.organizations, &org.id);
-    scope_ids.insert(org.id.clone());
-    let mut latest_by_org: HashMap<String, (String, Vec<UploadedReportMemberRow>)> = HashMap::new();
-    for document in data
-        .documents
-        .iter()
-        .filter(|document| scope_ids.contains(&document.org_id) && !is_shared_document(document))
-    {
-        let rows = report_rows_from_preview(&document.preview_text);
-        if rows.is_empty() {
-            continue;
-        }
-        let should_replace = latest_by_org
-            .get(&document.org_id)
-            .map(|(uploaded_at, _)| document.uploaded_at > *uploaded_at)
-            .unwrap_or(true);
-        if should_replace {
-            latest_by_org.insert(
-                document.org_id.clone(),
-                (document.uploaded_at.clone(), rows),
-            );
-        }
-    }
-    let mut grouped_rows = latest_by_org.into_values().collect::<Vec<_>>();
-    grouped_rows.sort_by(|left, right| left.0.cmp(&right.0));
-    grouped_rows
-        .into_iter()
-        .flat_map(|(_, rows)| rows)
-        .collect()
-}
+/// Báo cáo của 1 đơn vị: bám theo BẢNG của đơn vị đó. Mỗi cột dữ liệu (trừ cột
+/// STT và cột Họ tên) trở thành một nhóm phân tích tỉ lệ %, tên nhóm lấy đúng
+/// theo tên cột trong bảng.
+fn build_dashboard_report_record(org: &Organization, data: &AppData) -> DashboardReportUnitRecord {
+    let rows = unit_report_table(org, data);
+    let mut columns: Vec<DashboardReportColumn> = Vec::new();
+    let mut member_count = 0;
 
-fn parse_report_birth_year(value: &str) -> Option<i32> {
-    for token in value.split(|ch: char| !ch.is_ascii_digit()) {
-        if token.len() == 4
-            && let Ok(year) = token.parse::<i32>()
-            && (1930..=Utc::now().year()).contains(&year)
-        {
-            return Some(year);
-        }
-    }
-    None
-}
-
-fn split_report_activities(value: &str) -> Vec<String> {
-    let mut activities = Vec::new();
-    for line in value.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        let starts_new_activity = line
-            .chars()
-            .find(|ch| ch.is_alphabetic())
-            .map(|ch| ch.is_uppercase())
-            .unwrap_or(false);
-        if starts_new_activity || activities.is_empty() {
-            activities.push(line.to_owned());
-        } else if let Some(last) = activities.last_mut() {
-            last.push(' ');
-            last.push_str(line);
-        }
-    }
-    activities
-}
-
-fn build_uploaded_report_record(
-    org: &Organization,
-    rows: Vec<UploadedReportMemberRow>,
-) -> DashboardReportUnitRecord {
-    let current_year = Utc::now().year();
-    let mut age_counts: HashMap<String, usize> = HashMap::new();
-    let mut education_counts: HashMap<String, usize> = HashMap::new();
-    let mut rank_counts: HashMap<String, usize> = HashMap::new();
-    let mut completion_counts: HashMap<String, usize> = HashMap::new();
-    let mut seen_activities = HashSet::new();
-    let mut activities = Vec::new();
-
-    for row in &rows {
-        let age_label =
-            match parse_report_birth_year(&row.birth_date).map(|year| current_year - year) {
-                Some(age) if age < 30 => "Dưới 30",
-                Some(age) if age < 40 => "30-39",
-                Some(age) if age < 50 => "40-49",
-                Some(age) if age < 60 => "50-59",
-                _ => "60+",
-            };
-        *age_counts.entry(age_label.to_owned()).or_default() += 1;
-        *education_counts
-            .entry(canonical_report_bucket(
-                &row.education,
-                &["THPT", "Đại học", "Thạc sĩ", "Tiến sĩ"],
-            ))
-            .or_default() += 1;
-        *rank_counts
-            .entry(canonical_report_bucket(
-                &row.rank,
-                &["Cấp tá", "Cấp úy", "Hạ sỹ quan", "Dân sự"],
-            ))
-            .or_default() += 1;
-        *completion_counts
-            .entry(canonical_report_bucket(
-                &row.completion,
-                &["Xuất sắc", "Tốt", "Hoàn thành", "Không hoàn thành"],
-            ))
-            .or_default() += 1;
-        for activity in split_report_activities(&row.activity) {
-            if seen_activities.insert(activity.clone()) {
-                activities.push(activity);
+    if let Some(header) = rows.first() {
+        let body = &rows[1..];
+        member_count = body.len();
+        for (col_idx, col_name) in header.iter().enumerate() {
+            let key = normalize_report_header(col_name);
+            // Bỏ cột STT và cột Họ tên: thống kê tỉ lệ trên các cột này vô nghĩa.
+            if key == normalize_report_header("STT")
+                || key == normalize_report_header("Số thứ tự")
+                || key == normalize_report_header("Họ tên")
+                || key == normalize_report_header("Họ và tên")
+            {
+                continue;
+            }
+            let mut counts: HashMap<String, usize> = HashMap::new();
+            let mut order: Vec<String> = Vec::new();
+            for row in body {
+                let raw = row.get(col_idx).map(|s| s.trim()).unwrap_or("");
+                let value = if raw.is_empty() {
+                    "(Trống)".to_owned()
+                } else {
+                    raw.to_owned()
+                };
+                if !counts.contains_key(&value) {
+                    order.push(value.clone());
+                }
+                *counts.entry(value).or_default() += 1;
+            }
+            // Sắp xếp theo số lượng giảm dần; gộp phần đuôi nếu quá nhiều nhóm.
+            order.sort_by(|a, b| counts[b].cmp(&counts[a]).then_with(|| a.cmp(b)));
+            let mut buckets: Vec<DashboardReportBucket> = Vec::new();
+            const MAX_BUCKETS: usize = 8;
+            for label in order.iter().take(MAX_BUCKETS) {
+                buckets.push(DashboardReportBucket {
+                    label: label.clone(),
+                    value: counts[label],
+                });
+            }
+            if order.len() > MAX_BUCKETS {
+                let other: usize = order
+                    .iter()
+                    .skip(MAX_BUCKETS)
+                    .map(|label| counts[label])
+                    .sum();
+                if other > 0 {
+                    buckets.push(DashboardReportBucket {
+                        label: "Khác".to_owned(),
+                        value: other,
+                    });
+                }
+            }
+            if !buckets.is_empty() {
+                columns.push(DashboardReportColumn {
+                    name: col_name.trim().to_owned(),
+                    buckets,
+                });
             }
         }
     }
 
-    DashboardReportUnitRecord {
-        id: org.id.clone(),
-        name: org.name.clone(),
-        tier: org.tier,
-        member_count: rows.len(),
-        new_member_count: 0,
-        age_buckets: bucket_vec(&["Dưới 30", "30-39", "40-49", "50-59", "60+"], &age_counts),
-        education_buckets: bucket_vec(
-            &["THPT", "Đại học", "Thạc sĩ", "Tiến sĩ"],
-            &education_counts,
-        ),
-        completion_buckets: bucket_vec(
-            &["Xuất sắc", "Tốt", "Hoàn thành", "Không hoàn thành"],
-            &completion_counts,
-        ),
-        rank_buckets: bucket_vec(&["Cấp tá", "Cấp úy", "Hạ sỹ quan", "Dân sự"], &rank_counts),
-        activities,
-    }
-}
-
-fn build_dashboard_report_record(org: &Organization, data: &AppData) -> DashboardReportUnitRecord {
-    let uploaded_rows = report_rows_from_documents(org, data);
-    if !uploaded_rows.is_empty() {
-        return build_uploaded_report_record(org, uploaded_rows);
-    }
-
+    // Hoạt động trong phạm vi đơn vị (giữ nguyên như trước, dùng để liệt kê).
     let mut scope_ids = descendant_ids(&data.organizations, &org.id);
     scope_ids.insert(org.id.clone());
-    let current_year = Utc::now().year();
-    let members: Vec<&Member> = data
-        .members
-        .iter()
-        .filter(|member| scope_ids.contains(&member.org_id) && member.active)
-        .collect();
-    let activities: Vec<&Activity> = data
+    let mut activity_titles: Vec<String> = data
         .activities
         .iter()
         .filter(|activity| scope_ids.contains(&activity.org_id))
-        .collect();
-
-    let mut age_counts: HashMap<String, usize> = HashMap::new();
-    let mut education_counts: HashMap<String, usize> = HashMap::new();
-    let mut rank_counts: HashMap<String, usize> = HashMap::new();
-    for member in &members {
-        let age_label = match member_age(member) {
-            Some(age) if age < 30 => "Dưới 30",
-            Some(age) if age < 40 => "30-39",
-            Some(age) if age < 50 => "40-49",
-            Some(age) if age < 60 => "50-59",
-            _ => "60+",
-        };
-        *age_counts.entry(age_label.to_owned()).or_default() += 1;
-        *education_counts
-            .entry(education_bucket(member).to_owned())
-            .or_default() += 1;
-        *rank_counts
-            .entry(rank_bucket(member).to_owned())
-            .or_default() += 1;
-    }
-
-    let mut completion_counts: HashMap<String, usize> = HashMap::new();
-    for activity in &activities {
-        let label = match activity.status {
-            ActivityStatus::Completed => "Hoàn thành",
-            ActivityStatus::Ongoing => "Đang thực hiện",
-            ActivityStatus::Planned => "Kế hoạch",
-        };
-        *completion_counts.entry(label.to_owned()).or_default() += 1;
-    }
-
-    let mut activity_titles: Vec<String> = activities
-        .iter()
         .map(|activity| format!("{} - {}", activity.year, activity.title))
         .collect();
     activity_titles.sort();
+    activity_titles.dedup();
 
     DashboardReportUnitRecord {
         id: org.id.clone(),
         name: org.name.clone(),
         tier: org.tier,
-        member_count: members.len(),
-        new_member_count: members
-            .iter()
-            .filter(|member| parse_date_year(&member.joined_at) == Some(current_year))
-            .count(),
-        age_buckets: bucket_vec(&["Dưới 30", "30-39", "40-49", "50-59", "60+"], &age_counts),
-        education_buckets: bucket_vec(
-            &["Sau đại học", "Đại học", "Cao đẳng", "Trung cấp"],
-            &education_counts,
-        ),
-        completion_buckets: bucket_vec(
-            &["Hoàn thành", "Đang thực hiện", "Kế hoạch"],
-            &completion_counts,
-        ),
-        rank_buckets: bucket_vec(
-            &["Bí thư", "Phó bí thư", "Chủ tịch", "Ủy viên"],
-            &rank_counts,
-        ),
+        member_count,
+        columns,
         activities: activity_titles,
     }
 }
@@ -3701,13 +3490,14 @@ fn render_report_document(record: &DashboardReportUnitRecord) -> Markup {
             }
             dl {
                 div { dt { "Tên đơn vị" } dd { (&record.name) } }
-                div { dt { "Số lượng thành viên" } dd { (record.member_count) } }
-                div { dt { "Số thành viên mới trong năm" } dd { (record.new_member_count) } }
+                div { dt { "Số lượng" } dd { (record.member_count) } }
             }
-            (render_report_pie_chart("Theo độ tuổi", &record.age_buckets))
-            (render_report_pie_chart("Theo trình độ", &record.education_buckets))
-            (render_report_pie_chart("Mức độ hoàn thành nhiệm vụ", &record.completion_buckets))
-            (render_report_pie_chart("Theo cấp bậc", &record.rank_buckets))
+            @if record.columns.is_empty() {
+                p class="report-empty-note" { "Đơn vị chưa có bảng dữ liệu. Tải lên hoặc nhập bảng để tạo báo cáo." }
+            }
+            @for column in &record.columns {
+                (render_report_pie_chart(&format!("Theo {}", column.name), &column.buckets))
+            }
             section class="report-activities" {
                 h4 { "Hoạt động trong nhiệm kì" }
                 ol {
