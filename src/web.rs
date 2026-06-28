@@ -564,58 +564,6 @@ pub(crate) fn static_assets() -> &'static StaticAssets {
     })
 }
 
-/// Phù hiệu Quân khu 5 dạng SVG, nhúng sẵn trong mã nguồn để không phụ thuộc
-/// dịch vụ internet ngoài (phù hợp môi trường LAN nội bộ). Dùng làm logo và
-/// hình nền watermark trong giao diện.
-pub(crate) fn emblem_svg() -> &'static str {
-    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Phù hiệu Quân khu 5">
-  <defs>
-    <radialGradient id="qk5disc" cx="50%" cy="42%" r="70%">
-      <stop offset="0%" stop-color="#e23a2e"/>
-      <stop offset="100%" stop-color="#b3160f"/>
-    </radialGradient>
-    <linearGradient id="qk5ring" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#f6d271"/>
-      <stop offset="50%" stop-color="#cda23a"/>
-      <stop offset="100%" stop-color="#a87f24"/>
-    </linearGradient>
-    <linearGradient id="qk5grain" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#ffe79a"/>
-      <stop offset="100%" stop-color="#d6a72f"/>
-    </linearGradient>
-  </defs>
-  <circle cx="100" cy="100" r="96" fill="url(#qk5ring)"/>
-  <circle cx="100" cy="100" r="88" fill="#8c1109"/>
-  <circle cx="100" cy="100" r="82" fill="url(#qk5disc)"/>
-  <g fill="url(#qk5grain)" stroke="#9c7416" stroke-width="0.6">
-    <g id="qk5ear">
-      <path d="M100 178 C70 168 50 140 46 104" fill="none" stroke="#caa033" stroke-width="3"/>
-      <g>
-        <ellipse cx="49" cy="112" rx="4.4" ry="8" transform="rotate(-32 49 112)"/>
-        <ellipse cx="52" cy="126" rx="4.4" ry="8" transform="rotate(-26 52 126)"/>
-        <ellipse cx="57" cy="140" rx="4.4" ry="8" transform="rotate(-20 57 140)"/>
-        <ellipse cx="64" cy="152" rx="4.4" ry="8" transform="rotate(-12 64 152)"/>
-        <ellipse cx="73" cy="162" rx="4.4" ry="8" transform="rotate(-4 73 162)"/>
-        <ellipse cx="84" cy="170" rx="4.2" ry="7.4" transform="rotate(4 84 170)"/>
-      </g>
-    </g>
-    <use href="#qk5ear" transform="matrix(-1 0 0 1 200 0)"/>
-  </g>
-  <g transform="translate(100 30)">
-    <path d="M0 6 L42 0 L40 16 L2 22 Z" fill="#ffd23c"/>
-    <path d="M-2 4 L-2 40 L2 40 L2 6 Z" fill="#a87f24"/>
-    <polygon points="14,4 16,9 21,9 17,12 18,17 14,14 10,17 11,12 7,9 12,9" fill="#d11f1f"/>
-  </g>
-  <polygon points="100,58 107.6,81.5 132.3,81.5 112.4,96 120,119.5 100,105 80,119.5 87.6,96 67.7,81.5 92.4,81.5"
-           fill="#ffd23c" stroke="#b8860b" stroke-width="1"/>
-  <path d="M40 132 Q100 116 160 132 L160 150 Q100 134 40 150 Z" fill="#7c0d07"/>
-  <text x="100" y="146" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
-        font-size="17" font-weight="700" fill="#ffd23c" letter-spacing="1.5">QUÂN KHU 5</text>
-  <text x="100" y="120" text-anchor="middle" font-family="Georgia, serif"
-        font-size="9" font-weight="700" fill="#ffe79a" letter-spacing="1">16-10-1945</text>
-</svg>"##
-}
-
 async fn serve_emblem_svg() -> Response {
     // Ưu tiên logo PNG thật nếu người dùng đặt file vào <runtime>/branding/logo.png
     // (vd thả vào volume Docker /data/branding/logo.png) -> không cần build lại.
@@ -636,12 +584,19 @@ async fn serve_emblem_svg() -> Response {
         );
         return (StatusCode::OK, headers, bytes).into_response();
     }
-    cached_asset_response("image/svg+xml; charset=utf-8", emblem_svg())
+    // Mặc định: logo.png chính thức nhúng sẵn trong binary.
+    static LOGO_PNG: &[u8] = include_bytes!("../logo.png");
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
+    (StatusCode::OK, headers, LOGO_PNG).into_response()
 }
 
-/// Phục vụ ảnh nền nếu người dùng đặt <runtime>/branding/background.png
-/// (thả vào volume /data/branding/background.png). Không có thì trả 404 (giao
-/// diện vẫn dùng nền gradient mặc định).
+/// Phục vụ ảnh nền. Ưu tiên file thả vào volume <runtime>/branding/background.png,
+/// nếu không có thì dùng AnhNen.png nhúng sẵn trong binary.
 async fn serve_site_background() -> Response {
     let runtime_dir = std::env::var("APP_RUNTIME_DIR").unwrap_or_else(|_| "runtime".to_owned());
     let bg_path = std::path::Path::new(&runtime_dir)
@@ -656,7 +611,14 @@ async fn serve_site_background() -> Response {
         );
         return (StatusCode::OK, headers, bytes).into_response();
     }
-    StatusCode::NOT_FOUND.into_response()
+    static BG_PNG: &[u8] = include_bytes!("../AnhNen.png");
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=86400"),
+    );
+    (StatusCode::OK, headers, BG_PNG).into_response()
 }
 
 fn cached_asset_response(content_type: &'static str, body: &'static str) -> Response {
@@ -4431,9 +4393,8 @@ fn base_styles() -> &'static str {
             overflow: hidden;
             border: 1px solid #e5e7eb;
             background:
-                radial-gradient(circle at 12% 8%, rgba(209, 31, 31, 0.05), transparent 30%),
-                radial-gradient(circle at 88% 92%, rgba(205, 162, 58, 0.07), transparent 32%),
-                url("/assets/emblem.svg") center center / 420px no-repeat,
+                url("/assets/emblem.svg") center center / 360px no-repeat,
+                url("/assets/site-bg.png") center center / cover no-repeat,
                 #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
         }
@@ -4441,7 +4402,7 @@ fn base_styles() -> &'static str {
             content: "";
             position: absolute;
             inset: 0;
-            background: rgba(255, 255, 255, 0.9);
+            background: rgba(255, 255, 255, 0.86);
             pointer-events: none;
             z-index: 0;
         }
