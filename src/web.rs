@@ -453,6 +453,7 @@ fn build_router(state: AppState) -> Router {
         )
         .route("/settings/network", post(update_network_settings))
         .route("/settings/password", post(update_password_settings))
+        .route("/settings/username", post(update_username_settings))
         .route("/sync/bootstrap", get(sync_bootstrap))
         .route("/documents/manage", get(document_manager))
         .route("/units/{id}", get(unit_profile))
@@ -921,6 +922,89 @@ async fn update_password_settings(
         Json(PasswordSettingsResponse {
             ok: true,
             message: String::from("Đã đổi mật khẩu tài khoản."),
+        }),
+    )
+        .into_response()
+}
+
+/// Đổi tên đăng nhập của chính tài khoản đang đăng nhập.
+async fn update_username_settings(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Form(form): Form<UsernameSettingsForm>,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Phiên đăng nhập đã hết hạn."),
+            }),
+        )
+            .into_response();
+    };
+    if validate_csrf(&session, &form.csrf).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Yêu cầu không hợp lệ, vui lòng tải lại trang."),
+            }),
+        )
+            .into_response();
+    }
+    let new_username = form.username.trim().to_owned();
+    if new_username.is_empty() || new_username.len() > 64 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Tên đăng nhập không hợp lệ."),
+            }),
+        )
+            .into_response();
+    }
+    let mut data = state.data.write().await;
+    if data
+        .users
+        .iter()
+        .any(|item| item.id != user.id && item.username == new_username)
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Tên đăng nhập đã tồn tại."),
+            }),
+        )
+            .into_response();
+    }
+    let Some(target_user) = data.users.iter_mut().find(|item| item.id == user.id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Không tìm thấy tài khoản."),
+            }),
+        )
+            .into_response();
+    };
+    target_user.username = new_username;
+    if persist(&state, &data).is_err() {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(PasswordSettingsResponse {
+                ok: false,
+                message: String::from("Không lưu được tên đăng nhập."),
+            }),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        Json(PasswordSettingsResponse {
+            ok: true,
+            message: String::from("Đã đổi tên đăng nhập."),
         }),
     )
         .into_response()
@@ -2411,6 +2495,33 @@ async fn create_tree_node(
         updated_at: now,
     };
     data.organizations.push(new_org);
+
+    // Tạo sẵn tài khoản đăng nhập cho đơn vị mới: tên đăng nhập = mật khẩu,
+    // là một dãy 4 ký tự gồm 2 chữ số + 2 chữ cái (duy nhất trong hệ thống).
+    let credential = {
+        let mut attempt = random_unit_credential();
+        let mut guard = 0;
+        while data.users.iter().any(|u| u.username == attempt) && guard < 50 {
+            attempt = random_unit_credential();
+            guard += 1;
+        }
+        attempt
+    };
+    let password_hash = match hash_password(&credential) {
+        Ok(hash) => hash,
+        Err(_) => return internal_error("Không tạo được tài khoản cho đơn vị."),
+    };
+    data.users.push(User {
+        id: new_id("user"),
+        username: credential.clone(),
+        password_hash,
+        role: UserRole::OrgManager,
+        org_id: Some(org_id.clone()),
+        tree_key_enabled: false,
+        active: true,
+        created_at: now_string(),
+    });
+
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được đơn vị mới.");
     }
@@ -2418,8 +2529,31 @@ async fn create_tree_node(
         "id": org_id,
         "name": name,
         "tier": parent.tier + 1,
+        "username": credential,
+        "password": credential,
     }))
     .into_response()
+}
+
+/// Sinh dãy 4 ký tự gồm 2 chữ số + 2 chữ cái thường, thứ tự ngẫu nhiên.
+fn random_unit_credential() -> String {
+    use rand::{RngCore, rngs::OsRng};
+    let letters = b"abcdefghijklmnopqrstuvwxyz";
+    let digits = b"0123456789";
+    let mut buf = [0u8; 8];
+    OsRng.fill_bytes(&mut buf);
+    let mut chars = [
+        letters[(buf[0] as usize) % letters.len()] as char,
+        letters[(buf[1] as usize) % letters.len()] as char,
+        digits[(buf[2] as usize) % digits.len()] as char,
+        digits[(buf[3] as usize) % digits.len()] as char,
+    ];
+    // Trộn vị trí (Fisher-Yates) để chữ/số xen kẽ ngẫu nhiên.
+    for i in (1..4).rev() {
+        let j = (buf[4 + (3 - i)] as usize) % (i + 1);
+        chars.swap(i, j);
+    }
+    chars.iter().collect()
 }
 
 /// Đổi tên đơn vị (đồng bộ vào dữ liệu thật, không chỉ hiển thị).
@@ -3194,6 +3328,10 @@ async fn render_dashboard(
                                                     "Đổi mật khẩu"
                                                 }
                                                 div class="settings-password-panel" data-password-panel="true" hidden {
+                                                    div class="settings-username-row" {
+                                                        input type="text" class="settings-password-input settings-username-input" data-username-input="true" value=(&user.username) aria-label="Tên đăng nhập" autocomplete="username" spellcheck="false";
+                                                        button type="button" class="settings-username-confirm" data-username-confirm="true" title="Xác nhận đổi tên đăng nhập" aria-label="Xác nhận" hidden { "✓" }
+                                                    }
                                                     input type="password" class="settings-password-input" data-password-current="true" placeholder="Mật khẩu cũ" autocomplete="current-password";
                                                     input type="password" class="settings-password-input" data-password-next="true" placeholder="Mật khẩu mới" autocomplete="new-password";
                                                     button type="button" class="settings-password-save" data-password-save="true" { "Lưu" }
@@ -4454,7 +4592,7 @@ fn base_styles() -> &'static str {
             line-height: 1.3;
             font-weight: 800;
             letter-spacing: 0.5px;
-            color: #8c1109;
+            color: #111111;
             text-transform: uppercase;
             padding: 0 16px;
         }
@@ -4576,6 +4714,32 @@ fn base_styles() -> &'static str {
         .settings-password-panel[hidden] {
             display: none !important;
         }
+        .settings-username-row {
+            position: relative;
+            width: 100%;
+        }
+        .settings-username-input {
+            padding-right: 36px;
+        }
+        .settings-username-confirm {
+            position: absolute;
+            top: 50%;
+            right: 6px;
+            transform: translateY(-50%);
+            width: 24px;
+            height: 24px;
+            border: none;
+            border-radius: 6px;
+            background: #1f9d55;
+            color: #ffffff;
+            font-size: 0.95rem;
+            line-height: 1;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .settings-username-confirm[hidden] { display: none; }
         .settings-password-input {
             width: 100%;
             min-height: 34px;
@@ -8554,16 +8718,6 @@ fn render_org_tree_svg(organizations: &[Organization], user: &User) -> Markup {
 
     html! {
         div class="tree-canvas" data-tree-min-tier=(min_tier) data-tree-max-tier=(max_visible_tier) data-tree-rendered-count=(visible_organizations.len()) {
-            div class="tree-edit-sidebar" data-tree-edit-sidebar="true" hidden {
-                button type="button" class="tree-edit-sidebar-close" data-tree-edit-close="true" title="Đóng" aria-label="Đóng thanh chỉnh sửa" { "×" }
-                button type="button" class="tree-edit-sidebar-btn" data-tree-undo="true" title="Hoàn tác" aria-label="Hoàn tác" { "↶" }
-                button type="button" class="tree-edit-sidebar-btn" data-tree-forward="true" title="Làm lại" aria-label="Làm lại" { "↷" }
-                button type="button" class="tree-edit-sidebar-btn" data-tree-save="true" title="Lưu lại" aria-label="Lưu lại" {
-                    svg viewBox="0 0 24 24" aria-hidden="true" {
-                        path d="M5 3h11.2L21 7.8V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm1.8 2v4.9h8.4V5H6.8Zm5.2 0v3H8.9V5H12Zm-5.2 9.2V19h10.4v-4.8H6.8Z";
-                    }
-                }
-            }
             div class="tree-viewport" data-tree-viewport="true" data-tree-initial-scale={(format!("{:.3}", layout.initial_scale))} {
                 svg viewBox={(format!("0 0 {:.0} {:.0}", layout.viewbox_width, layout.viewbox_height))} class="org-svg" role="img" aria-label="Cây tổ chức nội bộ" {
                     g id="tree-panzoom" {
@@ -8590,10 +8744,6 @@ fn render_org_tree_svg(organizations: &[Organization], user: &User) -> Markup {
                         }
                     }
                 }
-            }
-            div class="tree-user-card" data-tree-user-card="true" hidden {
-                input type="text" data-tree-user-username="true" placeholder="Tài khoản" class="tree-user-input";
-                input type="text" data-tree-user-password="true" placeholder="Mật khẩu" class="tree-user-input";
             }
             div class="tree-rename-card" data-tree-rename-card="true" hidden {
                 div class="tree-rename-row" {
@@ -10020,7 +10170,6 @@ fn dashboard_script() -> &'static str {
         nodeEditor.hidden = true;
         nodeEditor.innerHTML = [
                 '<button type="button" class="tree-node-editor-btn" data-node-action="add" title="Thêm nút con">+</button>',
-            '<button type="button" class="tree-node-editor-btn user" data-node-action="user" title="Tạo user" aria-label="Tạo user"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12.4c2.72 0 4.92-2.2 4.92-4.92S14.72 2.56 12 2.56 7.08 4.76 7.08 7.48 9.28 12.4 12 12.4zm0 2.46c-3.61 0-6.54 2.93-6.54 6.54h13.08c0-3.61-2.93-6.54-6.54-6.54z"/></svg></button>',
                 '<button type="button" class="tree-node-editor-btn" data-node-action="rename" title="Đổi tên">✎</button>',
                 '<button type="button" class="tree-node-editor-btn delete" data-node-action="delete" title="Xóa nút">🗑</button>',
         ].join('');
@@ -10839,6 +10988,44 @@ fn dashboard_script() -> &'static str {
         if (passwordCurrentInput) passwordCurrentInput.value = '';
         if (passwordNextInput) passwordNextInput.value = '';
     };
+
+    // ── Đổi tên đăng nhập (ô phía trên 2 ô mật khẩu) ──
+    const usernameInput = document.querySelector('[data-username-input="true"]');
+    const usernameConfirm = document.querySelector('[data-username-confirm="true"]');
+    if (usernameInput && usernameConfirm) {
+        const originalUsername = usernameInput.value;
+        let savedUsername = originalUsername;
+        usernameInput.addEventListener('input', () => {
+            const changed = usernameInput.value.trim() !== savedUsername;
+            usernameConfirm.hidden = !changed;
+        });
+        usernameConfirm.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            const next = usernameInput.value.trim();
+            if (!next || next === savedUsername) { usernameConfirm.hidden = true; return; }
+            try {
+                const body = new URLSearchParams();
+                body.set('csrf', dashboardCsrf);
+                body.set('username', next);
+                const resp = await fetch('/settings/username', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body.toString(),
+                });
+                const payload = await resp.json().catch(() => ({}));
+                if (resp.ok && payload.ok) {
+                    savedUsername = next;
+                    usernameConfirm.hidden = true;
+                    clientUi.showNotice(payload.message || 'Đã đổi tên đăng nhập.', 'success');
+                } else {
+                    clientUi.showNotice(payload.message || 'Không đổi được tên đăng nhập.', 'error');
+                }
+            } catch (_) {
+                clientUi.showNotice('Không kết nối được tới máy chủ.', 'error');
+            }
+        });
+    }
 
     const syncIpButton = () => {
         if (!ipToggleButton || !ipSection) return;
@@ -13248,6 +13435,12 @@ struct PasswordSettingsForm {
     current_password: String,
     new_password: String,
     confirm_password: String,
+}
+
+#[derive(Deserialize)]
+struct UsernameSettingsForm {
+    csrf: String,
+    username: String,
 }
 
 #[derive(Serialize)]
