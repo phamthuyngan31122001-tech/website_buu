@@ -44,10 +44,6 @@ use crate::{
         can_upload_documents, default_org_user_credentials, default_root_admin_credentials,
         direct_children, is_legacy_demo_document, is_shared_document, org_sort_key,
     },
-    zk::{
-        ClientCiphertextSubmission, ExternalZkUser, StoredCiphertextDocument, ZkState,
-        ZkUserRegistration,
-    },
 };
 
 #[derive(Clone)]
@@ -109,7 +105,6 @@ struct NetworkSettings {
 struct AppState {
     data: Arc<RwLock<AppData>>,
     storage: Arc<Storage>,
-    zk_state: Arc<RwLock<ZkState>>,
     sessions: Arc<RwLock<HashMap<String, SessionState>>>,
     login_attempts: Arc<RwLock<HashMap<String, LoginAttemptState>>>,
     dashboard_tree_states: Arc<RwLock<HashMap<String, String>>>,
@@ -260,13 +255,11 @@ pub async fn run() -> anyhow::Result<()> {
     );
     let _log_guard = setup_logging(&runtime_dir)?;
     let data_dir = runtime_dir.join("data");
-    let zk_dir = runtime_dir.join("zk");
     let key_dir = runtime_dir.join("keys");
     let dashboard_tree_state_path = data_dir.join("dashboard_tree_states.json");
     let master_key = MasterKey::load_or_create(&key_dir.join("master_key.b64"))?;
     let (kem_public_key, _kem_private_key) = load_or_create_kem_pair(&key_dir, &master_key)?;
     let storage = Arc::new(Storage::new(&data_dir, master_key)?);
-    let zk_state = Arc::new(RwLock::new(ZkState::load_or_create(&zk_dir)?));
     info!(data_dir = %data_dir.display(), key_dir = %key_dir.display(), "loading persisted application data");
     let mut data = storage.load()?;
     let mut startup_state_changed = false;
@@ -336,7 +329,6 @@ pub async fn run() -> anyhow::Result<()> {
     let state = AppState {
         data: Arc::new(RwLock::new(data)),
         storage,
-        zk_state,
         sessions: Arc::new(RwLock::new(HashMap::new())),
         login_attempts: Arc::new(RwLock::new(HashMap::new())),
         dashboard_tree_states: Arc::new(RwLock::new(load_dashboard_tree_states(
@@ -442,16 +434,10 @@ fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
-        .route(
-            "/zk/users",
-            get(zk_public_users).post(zk_register_public_user),
-        )
-        .route(
-            "/zk/documents",
-            get(zk_documents_index).post(zk_store_ciphertext),
-        )
-        .route("/zk/documents/{id}/package", get(zk_document_package))
         .route("/service-worker.js", get(service_worker_asset))
+        .route("/assets/emblem.svg", get(serve_emblem_svg))
+        .route("/favicon.ico", get(serve_emblem_svg))
+        .route("/favicon.svg", get(serve_emblem_svg))
         .route(
             &format!("/assets/{}", assets.base_css_filename),
             get(serve_base_css),
@@ -477,6 +463,7 @@ fn build_router(state: AppState) -> Router {
         .route("/sync/bootstrap", get(sync_bootstrap))
         .route("/documents/manage", get(document_manager))
         .route("/units/{id}", get(unit_profile))
+        .route("/units/{id}/manage", get(unit_manage))
         .route("/units/{id}/documents/unlock", post(unlock_unit_documents))
         .route(
             "/units/{unit_id}/documents/{doc_id}",
@@ -575,6 +562,62 @@ pub(crate) fn static_assets() -> &'static StaticAssets {
             login_js_filename,
         }
     })
+}
+
+/// Phù hiệu Quân khu 5 dạng SVG, nhúng sẵn trong mã nguồn để không phụ thuộc
+/// dịch vụ internet ngoài (phù hợp môi trường LAN nội bộ). Dùng làm logo và
+/// hình nền watermark trong giao diện.
+pub(crate) fn emblem_svg() -> &'static str {
+    r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Phù hiệu Quân khu 5">
+  <defs>
+    <radialGradient id="qk5disc" cx="50%" cy="42%" r="70%">
+      <stop offset="0%" stop-color="#e23a2e"/>
+      <stop offset="100%" stop-color="#b3160f"/>
+    </radialGradient>
+    <linearGradient id="qk5ring" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f6d271"/>
+      <stop offset="50%" stop-color="#cda23a"/>
+      <stop offset="100%" stop-color="#a87f24"/>
+    </linearGradient>
+    <linearGradient id="qk5grain" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffe79a"/>
+      <stop offset="100%" stop-color="#d6a72f"/>
+    </linearGradient>
+  </defs>
+  <circle cx="100" cy="100" r="96" fill="url(#qk5ring)"/>
+  <circle cx="100" cy="100" r="88" fill="#8c1109"/>
+  <circle cx="100" cy="100" r="82" fill="url(#qk5disc)"/>
+  <g fill="url(#qk5grain)" stroke="#9c7416" stroke-width="0.6">
+    <g id="qk5ear">
+      <path d="M100 178 C70 168 50 140 46 104" fill="none" stroke="#caa033" stroke-width="3"/>
+      <g>
+        <ellipse cx="49" cy="112" rx="4.4" ry="8" transform="rotate(-32 49 112)"/>
+        <ellipse cx="52" cy="126" rx="4.4" ry="8" transform="rotate(-26 52 126)"/>
+        <ellipse cx="57" cy="140" rx="4.4" ry="8" transform="rotate(-20 57 140)"/>
+        <ellipse cx="64" cy="152" rx="4.4" ry="8" transform="rotate(-12 64 152)"/>
+        <ellipse cx="73" cy="162" rx="4.4" ry="8" transform="rotate(-4 73 162)"/>
+        <ellipse cx="84" cy="170" rx="4.2" ry="7.4" transform="rotate(4 84 170)"/>
+      </g>
+    </g>
+    <use href="#qk5ear" transform="matrix(-1 0 0 1 200 0)"/>
+  </g>
+  <g transform="translate(100 30)">
+    <path d="M0 6 L42 0 L40 16 L2 22 Z" fill="#ffd23c"/>
+    <path d="M-2 4 L-2 40 L2 40 L2 6 Z" fill="#a87f24"/>
+    <polygon points="14,4 16,9 21,9 17,12 18,17 14,14 10,17 11,12 7,9 12,9" fill="#d11f1f"/>
+  </g>
+  <polygon points="100,58 107.6,81.5 132.3,81.5 112.4,96 120,119.5 100,105 80,119.5 87.6,96 67.7,81.5 92.4,81.5"
+           fill="#ffd23c" stroke="#b8860b" stroke-width="1"/>
+  <path d="M40 132 Q100 116 160 132 L160 150 Q100 134 40 150 Z" fill="#7c0d07"/>
+  <text x="100" y="146" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif"
+        font-size="17" font-weight="700" fill="#ffd23c" letter-spacing="1.5">QUÂN KHU 5</text>
+  <text x="100" y="120" text-anchor="middle" font-family="Georgia, serif"
+        font-size="9" font-weight="700" fill="#ffe79a" letter-spacing="1">16-10-1945</text>
+</svg>"##
+}
+
+async fn serve_emblem_svg() -> Response {
+    cached_asset_response("image/svg+xml; charset=utf-8", emblem_svg())
 }
 
 fn cached_asset_response(content_type: &'static str, body: &'static str) -> Response {
@@ -2292,7 +2335,11 @@ async fn update_member(
     if persist(&state, &data).is_err() {
         return internal_error("Không cập nhật được thành viên.");
     }
-    Redirect::to(&format!("/units/{}", unit_id)).into_response()
+    if form.return_to.is_empty() {
+        Redirect::to(&format!("/units/{}", unit_id)).into_response()
+    } else {
+        redirect_back(&form.return_to)
+    }
 }
 
 async fn login(
@@ -2410,7 +2457,7 @@ async fn create_root_org(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được dữ liệu tổ chức.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn create_child_org(
@@ -2467,7 +2514,7 @@ async fn create_child_org(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được nhánh tổ chức.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn add_member(
@@ -2521,7 +2568,7 @@ async fn add_member(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được thành viên.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn add_activity(
@@ -2554,7 +2601,7 @@ async fn add_activity(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được hoạt động.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn review_activity(
@@ -2585,7 +2632,7 @@ async fn review_activity(
     if persist(&state, &data).is_err() {
         return internal_error("Không cập nhật được trạng thái kiểm tra.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn create_user(
@@ -2623,7 +2670,7 @@ async fn create_user(
     if persist(&state, &data).is_err() {
         return internal_error("Không lưu được người dùng.");
     }
-    Redirect::to("/").into_response()
+    redirect_back(&form.return_to)
 }
 
 async fn update_dashboard_tree_user_credentials(
@@ -2942,136 +2989,6 @@ async fn download_document(
     (StatusCode::OK, headers, decrypted).into_response()
 }
 
-/// Returns the ZK user that the caller is bound to via the `display_name == username`
-/// convention. If the caller is the root admin, returns `None` so that admin code
-/// paths can choose to allow broader access.
-async fn caller_zk_user(state: &AppState, user: &User) -> Option<ExternalZkUser> {
-    state
-        .zk_state
-        .read()
-        .await
-        .public_users()
-        .iter()
-        .find(|item| item.display_name == user.username)
-        .cloned()
-}
-
-async fn zk_public_users(State(state): State<AppState>, jar: CookieJar) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let zk_state = state.zk_state.read().await;
-    let users: Vec<ExternalZkUser> = if user.role == UserRole::RootAdmin {
-        zk_state.public_users().to_vec()
-    } else {
-        zk_state
-            .public_users()
-            .iter()
-            .filter(|item| item.display_name == user.username)
-            .cloned()
-            .collect()
-    };
-    Json(users).into_response()
-}
-
-async fn zk_register_public_user(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(registration): Json<ZkUserRegistration>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if user.role != UserRole::RootAdmin && registration.display_name != user.username {
-        return (
-            StatusCode::FORBIDDEN,
-            "ZK display_name must match your username",
-        )
-            .into_response();
-    }
-    let mut zk_state = state.zk_state.write().await;
-    match zk_state.register_user(registration) {
-        Ok(zk_user) => (StatusCode::CREATED, Json(zk_user)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
-    }
-}
-
-async fn zk_documents_index(State(state): State<AppState>, jar: CookieJar) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let bound = caller_zk_user(&state, &user).await;
-    let zk_state = state.zk_state.read().await;
-    let mut documents: Vec<StoredCiphertextDocument> = if user.role == UserRole::RootAdmin {
-        zk_state.documents().to_vec()
-    } else if let Some(bound_user) = bound {
-        zk_state
-            .documents()
-            .iter()
-            .filter(|doc| doc.owner_user_id == bound_user.user_id)
-            .cloned()
-            .collect()
-    } else {
-        Vec::new()
-    };
-    documents.sort_by(|left, right| right.stored_at.cmp(&left.stored_at));
-    Json(documents).into_response()
-}
-
-async fn zk_store_ciphertext(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Json(submission): Json<ClientCiphertextSubmission>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    if user.role != UserRole::RootAdmin {
-        let owner_id = submission.owner_user_id.clone();
-        let zk_state = state.zk_state.read().await;
-        let allowed = zk_state
-            .public_users()
-            .iter()
-            .any(|item| item.user_id == owner_id && item.display_name == user.username);
-        drop(zk_state);
-        if !allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                "you may only submit ciphertexts under your own ZK identity",
-            )
-                .into_response();
-        }
-    }
-    let mut zk_state = state.zk_state.write().await;
-    match zk_state.verify_and_store_submission(submission) {
-        Ok(document) => (StatusCode::CREATED, Json(document)).into_response(),
-        Err(error) => (StatusCode::BAD_REQUEST, error.to_string()).into_response(),
-    }
-}
-
-async fn zk_document_package(
-    State(state): State<AppState>,
-    jar: CookieJar,
-    Path(document_id): Path<String>,
-) -> Response {
-    let Some((user, _)) = require_session(&state, &jar).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
-    };
-    let zk_state = state.zk_state.read().await;
-    let Ok(package) = zk_state.ciphertext_package(&document_id) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if user.role != UserRole::RootAdmin {
-        let allowed = zk_state.public_users().iter().any(|item| {
-            item.user_id == package.document.owner_user_id && item.display_name == user.username
-        });
-        if !allowed {
-            return StatusCode::FORBIDDEN.into_response();
-        }
-    }
-    Json(package).into_response()
-}
-
 async fn render_dashboard(
     state: &AppState,
     user: &User,
@@ -3149,6 +3066,7 @@ async fn render_dashboard(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Website nội bộ tổ chức" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -3156,6 +3074,13 @@ async fn render_dashboard(
             body data-panel-root="dashboard" data-initial-panel=(initial_panel) data-sync-username=(&user.username) data-tree-edit-admin=(user.role == UserRole::RootAdmin) data-tree-csrf=(&csrf) data-dashboard-org-id=(dashboard_org.as_ref().map(|org| org.id.as_str()).unwrap_or_default()) {
                 main class="shell command-shell" {
                     section class="graph-stage minimal-stage" {
+                        div class="stage-brand" {
+                            img class="stage-brand-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="46" height="46";
+                            div class="stage-brand-text" {
+                                span class="stage-brand-title" { "HỆ THỐNG NỘI BỘ" }
+                                span class="stage-brand-sub" { "Quân khu 5" }
+                            }
+                        }
                         div class="floating-controls" {
                             div class="top-control-row" {
                                 div class="panel-shell" data-panel="settings" {
@@ -3297,6 +3222,7 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (format!("Đơn vị {}", unit.name)) }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().profile_js_url) defer {}
@@ -3315,6 +3241,14 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                             }
                         }
                         div class="profile-right-tools" {
+                            @if access == ProfileAccess::Full {
+                                a href=(format!("/units/{}/manage", unit.id)) class="rail-button profile-corner-button profile-manage-button" title="Quản lý đơn vị" aria-label="Quản lý đơn vị" {
+                                    svg viewBox="0 0 24 24" aria-hidden="true" {
+                                        path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" fill="none" stroke="currentColor" stroke-width="2";
+                                        path d="M19.4 13a7.6 7.6 0 0 0 .05-2l1.6-1.2-1.6-2.8-1.9.7a7.6 7.6 0 0 0-1.7-1l-.3-2H10.4l-.3 2a7.6 7.6 0 0 0-1.7 1l-1.9-.7-1.6 2.8L6.5 11a7.6 7.6 0 0 0 0 2l-1.6 1.2 1.6 2.8 1.9-.7a7.6 7.6 0 0 0 1.7 1l.3 2h3.2l.3-2a7.6 7.6 0 0 0 1.7-1l1.9.7 1.6-2.8L19.4 13Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round";
+                                    }
+                                }
+                            }
                             a href="/" class="rail-button profile-corner-button profile-home-button" title="Về trang chủ" aria-label="Về trang chủ" {
                                 svg viewBox="0 0 24 24" aria-hidden="true" {
                                     path d="M12 3.5 3.5 10.8v9.7h6v-6h5v6h6v-9.7L12 3.5Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round";
@@ -3354,6 +3288,325 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                                     unit_is_leaf: can_upload_documents_here,
                                 }))
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn unit_manage(
+    State(state): State<AppState>,
+    Path(unit_id): Path<String>,
+    jar: CookieJar,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return Redirect::to("/").into_response();
+    };
+    let data = state.data.read().await;
+    let Some(unit) = data
+        .organizations
+        .iter()
+        .find(|org| org.id == unit_id)
+        .cloned()
+    else {
+        return Redirect::to("/").into_response();
+    };
+    // Chỉ đơn vị có toàn quyền (admin hoặc cấp trên của đơn vị này) mới quản lý được.
+    if profile_access(&user, &unit.id, &data) != Some(ProfileAccess::Full) {
+        return Redirect::to("/").into_response();
+    }
+
+    let mut members: Vec<_> = data
+        .members
+        .iter()
+        .filter(|member| member.org_id == unit.id)
+        .cloned()
+        .collect();
+    members.sort_by(|left, right| left.full_name.cmp(&right.full_name));
+    let mut activities: Vec<_> = data
+        .activities
+        .iter()
+        .filter(|activity| activity.org_id == unit.id)
+        .cloned()
+        .collect();
+    activities.sort_by(|left, right| {
+        right
+            .year
+            .cmp(&left.year)
+            .then_with(|| left.title.cmp(&right.title))
+    });
+    let mut children = direct_children(&data.organizations, &unit.id);
+    children.sort_by(|left, right| org_sort_key(&left.name).cmp(&org_sort_key(&right.name)));
+    let mut unit_users: Vec<_> = data
+        .users
+        .iter()
+        .filter(|item| item.org_id.as_deref() == Some(unit.id.as_str()))
+        .cloned()
+        .collect();
+    unit_users.sort_by(|left, right| left.username.cmp(&right.username));
+    let is_root_admin = user.role == UserRole::RootAdmin;
+    let csrf = session.csrf_token.clone();
+    drop(data);
+
+    Html(
+        render_unit_manage_page(UnitManageView {
+            unit: &unit,
+            members: &members,
+            activities: &activities,
+            children: &children,
+            unit_users: &unit_users,
+            is_root_admin,
+            csrf: &csrf,
+        })
+        .into_string(),
+    )
+    .into_response()
+}
+
+struct UnitManageView<'a> {
+    unit: &'a Organization,
+    members: &'a [Member],
+    activities: &'a [Activity],
+    children: &'a [Organization],
+    unit_users: &'a [User],
+    is_root_admin: bool,
+    csrf: &'a str,
+}
+
+fn activity_status_label(status: &ActivityStatus) -> &'static str {
+    match status {
+        ActivityStatus::Completed => "Đã hoàn thành",
+        ActivityStatus::Ongoing => "Đang diễn ra",
+        ActivityStatus::Planned => "Dự kiến",
+    }
+}
+
+fn render_unit_manage_page(view: UnitManageView<'_>) -> Markup {
+    let UnitManageView {
+        unit,
+        members,
+        activities,
+        children,
+        unit_users,
+        is_root_admin,
+        csrf,
+    } = view;
+    let return_to = format!("/units/{}/manage", unit.id);
+    let current_year = Utc::now().year();
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (format!("Quản lý đơn vị {}", unit.name)) }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="stylesheet" href=(static_assets().base_css_url);
+            }
+            body data-panel-root="manage" {
+                main class="shell manage-shell" {
+                    header class="manage-header" {
+                        img class="manage-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="56" height="56";
+                        div class="manage-header-text" {
+                            span class="manage-over" { "QUÂN KHU 5" }
+                            h1 class="manage-title" { "Quản lý đơn vị " (&unit.name) }
+                        }
+                        div class="manage-header-actions" {
+                            a href=(format!("/units/{}", unit.id)) class="manage-link-btn" { "Xem tài liệu" }
+                            a href="/" class="manage-link-btn" { "Trang chủ" }
+                        }
+                    }
+
+                    // ── Thành viên ───────────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Thành viên (" (members.len()) ")" }
+                        @if members.is_empty() {
+                            p class="muted" { "Chưa có thành viên." }
+                        } @else {
+                            div class="manage-table-wrap" {
+                                table class="manage-table" {
+                                    thead { tr {
+                                        th { "Họ tên" } th { "Chức vụ" } th { "Năm" }
+                                        th { "Ngày sinh" } th { "Điện thoại" } th { "Hoạt động" } th {}
+                                    } }
+                                    tbody {
+                                        @for member in members {
+                                            tr {
+                                                td { (&member.full_name) }
+                                                td { (&member.title) }
+                                                td { (member.year) }
+                                                td { (&member.birth_date) }
+                                                td { (&member.phone) }
+                                                td { (if member.active { "Đang hoạt động" } else { "Ngừng" }) }
+                                                td {
+                                                    details class="manage-edit" {
+                                                        summary { "Sửa" }
+                                                        form method="post" action=(format!("/units/{}/members/{}", unit.id, member.id)) class="manage-form manage-form-grid" {
+                                                            input type="hidden" name="csrf" value=(csrf);
+                                                            input type="hidden" name="return_to" value=(&return_to);
+                                                            label { "Họ tên" input type="text" name="full_name" value=(&member.full_name) required; }
+                                                            label { "Chức vụ" input type="text" name="title" value=(&member.title); }
+                                                            label { "Ngày sinh" input type="text" name="birth_date" value=(&member.birth_date) placeholder="1990-01-01"; }
+                                                            label { "Điện thoại" input type="text" name="phone" value=(&member.phone); }
+                                                            label { "Địa chỉ" input type="text" name="address" value=(&member.address); }
+                                                            label { "Ngày vào" input type="text" name="joined_at" value=(&member.joined_at) placeholder="2020-01-01"; }
+                                                            label class="manage-span2" { "Ghi chú" input type="text" name="notes" value=(&member.notes); }
+                                                            label class="manage-check" { input type="checkbox" name="active" checked[member.active]; " Đang hoạt động" }
+                                                            button type="submit" class="manage-submit" { "Lưu thay đổi" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Thêm thành viên" }
+                            form method="post" action=(format!("/orgs/{}/members", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Họ tên" input type="text" name="full_name" required; }
+                                label { "Chức vụ" input type="text" name="title" placeholder="Đảng viên"; }
+                                label { "Năm" input type="number" name="year" value=(current_year); }
+                                label { "Ngày sinh" input type="text" name="birth_date" placeholder="1990-01-01"; }
+                                label { "Điện thoại" input type="text" name="phone"; }
+                                label { "Địa chỉ" input type="text" name="address"; }
+                                label { "Ngày vào" input type="text" name="joined_at" placeholder="2020-01-01"; }
+                                label class="manage-span2" { "Ghi chú" input type="text" name="notes"; }
+                                button type="submit" class="manage-submit" { "Thêm thành viên" }
+                            }
+                        }
+                    }
+
+                    // ── Hoạt động ────────────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Hoạt động (" (activities.len()) ")" }
+                        @if activities.is_empty() {
+                            p class="muted" { "Chưa có hoạt động." }
+                        } @else {
+                            div class="manage-table-wrap" {
+                                table class="manage-table" {
+                                    thead { tr { th { "Tiêu đề" } th { "Năm" } th { "Trạng thái" } th { "Đã kiểm tra" } th {} } }
+                                    tbody {
+                                        @for activity in activities {
+                                            tr {
+                                                td { (&activity.title) }
+                                                td { (activity.year) }
+                                                td { (activity_status_label(&activity.status)) }
+                                                td { (if activity.reviewed { "✓" } else { "—" }) }
+                                                td {
+                                                    @if !activity.reviewed {
+                                                        form method="post" action=(format!("/activities/{}/review", activity.id)) class="manage-inline-form" {
+                                                            input type="hidden" name="csrf" value=(csrf);
+                                                            input type="hidden" name="return_to" value=(&return_to);
+                                                            button type="submit" class="manage-submit manage-submit-sm" { "Duyệt" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Thêm hoạt động" }
+                            form method="post" action=(format!("/orgs/{}/activities", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Tiêu đề" input type="text" name="title" required; }
+                                label { "Năm" input type="number" name="year" value=(current_year); }
+                                label { "Trạng thái"
+                                    select name="status" {
+                                        option value="planned" { "Dự kiến" }
+                                        option value="ongoing" { "Đang diễn ra" }
+                                        option value="completed" { "Đã hoàn thành" }
+                                    }
+                                }
+                                label class="manage-span2" { "Tóm tắt" input type="text" name="summary"; }
+                                button type="submit" class="manage-submit" { "Thêm hoạt động" }
+                            }
+                        }
+                    }
+
+                    // ── Đơn vị trực thuộc ────────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Đơn vị trực thuộc (" (children.len()) ")" }
+                        @if children.is_empty() {
+                            p class="muted" { "Chưa có đơn vị trực thuộc." }
+                        } @else {
+                            ul class="manage-list" {
+                                @for child in children {
+                                    li {
+                                        a href=(format!("/units/{}/manage", child.id)) { (&child.name) }
+                                        span class="muted" { " · " (&child.category) }
+                                    }
+                                }
+                            }
+                        }
+                        details class="manage-add" {
+                            summary { "+ Tạo đơn vị trực thuộc" }
+                            form method="post" action=(format!("/orgs/{}/children", unit.id)) class="manage-form manage-form-grid" {
+                                input type="hidden" name="csrf" value=(csrf);
+                                input type="hidden" name="return_to" value=(&return_to);
+                                label { "Tên đơn vị" input type="text" name="name" required; }
+                                label { "Phân loại" input type="text" name="category" placeholder="chi bộ"; }
+                                label { "Cấp (tier)" input type="number" name="tier" value=(unit.tier + 1); }
+                                label { "Tài khoản quản lý" input type="text" name="username" required; }
+                                label { "Mật khẩu" input type="text" name="password" required; }
+                                label { "Vai trò"
+                                    select name="role" {
+                                        option value="org_manager" { "Quản lý đơn vị" }
+                                        option value="root_admin" { "Quản trị hệ thống" }
+                                    }
+                                }
+                                label { "Khóa cây (APP_TREE_KEY)" input type="password" name="admin_key" required; }
+                                label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
+                                button type="submit" class="manage-submit" { "Tạo đơn vị" }
+                            }
+                        }
+                    }
+
+                    // ── Người dùng của đơn vị ────────────────────────────────
+                    section class="manage-card" {
+                        h2 { "Tài khoản gắn với đơn vị (" (unit_users.len()) ")" }
+                        @if unit_users.is_empty() {
+                            p class="muted" { "Chưa có tài khoản nào gắn trực tiếp với đơn vị này." }
+                        } @else {
+                            ul class="manage-list" {
+                                @for account in unit_users {
+                                    li {
+                                        strong { (&account.username) }
+                                        span class="muted" { " · " (account.role.as_str()) (if account.active { "" } else { " · đã khóa" }) }
+                                    }
+                                }
+                            }
+                        }
+                        @if is_root_admin {
+                            details class="manage-add" {
+                                summary { "+ Tạo tài khoản cho đơn vị này" }
+                                form method="post" action="/users" class="manage-form manage-form-grid" {
+                                    input type="hidden" name="csrf" value=(csrf);
+                                    input type="hidden" name="return_to" value=(&return_to);
+                                    input type="hidden" name="org_id" value=(&unit.id);
+                                    label { "Tài khoản" input type="text" name="username" required; }
+                                    label { "Mật khẩu" input type="text" name="password" required; }
+                                    label { "Vai trò"
+                                        select name="role" {
+                                            option value="org_manager" { "Quản lý đơn vị" }
+                                            option value="root_admin" { "Quản trị hệ thống" }
+                                        }
+                                    }
+                                    label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
+                                    button type="submit" class="manage-submit" { "Tạo tài khoản" }
+                                }
+                            }
+                        } @else {
+                            p class="muted manage-note" { "Chỉ quản trị hệ thống mới tạo được tài khoản mới." }
                         }
                     }
                 }
@@ -3477,6 +3730,8 @@ fn report_bucket_summary(title: &str, buckets: &[DashboardReportBucket]) -> (Str
             }
             _ => "Cơ cấu độ tuổi tập trung ở các nhóm còn lại.".to_owned(),
         }
+    } else if positive.len() == 1 {
+        "Toàn bộ dữ liệu tập trung ở một nhóm duy nhất.".to_owned()
     } else if let Some(lowest) = positive.last() {
         format!(
             "Nhóm thấp nhất có dữ liệu là {} với {} thành viên, chiếm {}%.",
@@ -3519,6 +3774,14 @@ fn render_report_pie_chart(title: &str, buckets: &[DashboardReportBucket]) -> Ma
 fn render_report_document(record: &DashboardReportUnitRecord) -> Markup {
     html! {
         article class="report-document" {
+            header class="report-letterhead" {
+                div class="report-letterhead-emblem" aria-hidden="true" {}
+                div class="report-letterhead-text" {
+                    span class="report-letterhead-over" { "QUÂN KHU 5" }
+                    h2 class="report-letterhead-title" { "BÁO CÁO TỔNG HỢP" }
+                    p class="report-letterhead-unit" { "Đơn vị: " (&record.name) }
+                }
+            }
             dl {
                 div { dt { "Tên đơn vị" } dd { (&record.name) } }
                 div { dt { "Số lượng thành viên" } dd { (record.member_count) } }
@@ -3642,129 +3905,6 @@ fn render_document_list(documents: &[Document], current_org_id: &str, href_prefi
     }
 }
 
-#[allow(dead_code)]
-struct ProfileDocumentNameListView<'a> {
-    current_org_id: &'a str,
-    target_unit_id: &'a str,
-    can_open: bool,
-    csrf: &'a str,
-    enable_shared_tools: bool,
-    can_upload: bool,
-    upload_kind: Option<&'a str>,
-    panel_name: &'a str,
-}
-
-#[allow(dead_code)]
-fn render_profile_document_name_list(
-    documents: &[Document],
-    view: ProfileDocumentNameListView<'_>,
-) -> Markup {
-    let ProfileDocumentNameListView {
-        current_org_id,
-        target_unit_id,
-        can_open,
-        csrf,
-        enable_shared_tools,
-        can_upload,
-        upload_kind,
-        panel_name,
-    } = view;
-    let upload_return_to = format!("/units/{}?panel={}", target_unit_id, panel_name);
-    // For shared docs: only leaf accounts (can_upload == true) may see the upload tile
-    let show_upload_empty_state = !csrf.is_empty()
-        && !target_unit_id.is_empty()
-        && upload_kind.is_some()
-        && (upload_kind != Some("shared") || can_upload);
-    html! {
-        div class="document-list-card" data-doc-unit=(current_org_id) data-doc-csrf=(csrf) {
-            @if enable_shared_tools {
-                div class="doc-list-toolbar" {
-                    span class="doc-method-col-label" {}
-                }
-            }
-            @if documents.is_empty() {
-                @if show_upload_empty_state {
-                    form
-                        method="post"
-                        action="/documents"
-                        enctype="multipart/form-data"
-                        class="profile-empty-upload-form"
-                        data-profile-upload-form="true"
-                        data-profile-upload-kind=(upload_kind.unwrap_or("unit"))
-                    {
-                        input type="hidden" name="csrf" value=(csrf);
-                        input type="hidden" name="org_id" value=(target_unit_id);
-                        input type="hidden" name="year" value={(chrono::Utc::now().year())};
-                        input type="hidden" name="return_to" value=(upload_return_to);
-                        input type="hidden" name="title" value={(if upload_kind == Some("shared") { "Tài liệu đồng bộ" } else { "Tài liệu nội bộ" })} data-profile-upload-title="true";
-                        label class="profile-empty-upload-tile" title="Tải tài liệu lên" {
-                            input type="file" name="document" class="profile-empty-upload-input" data-profile-upload-input="true" required;
-                            span class="profile-empty-upload-plus" aria-hidden="true" { "+" }
-                            span class="profile-empty-upload-copy" {
-                                (if upload_kind == Some("shared") { "Tải tài liệu đồng bộ" } else { "Tải tài liệu nội bộ" })
-                            }
-                        }
-                    }
-                } @else {
-                    p class="muted" { "Chưa có tài liệu." }
-                }
-            } @else {
-                ul class="document-name-list" {
-                    @for (idx, document) in documents.iter().enumerate() {
-                        @let short_name = profile_document_short_name(&document.file_name);
-                        li class="doc-name-row" data-doc-row=(&document.id) {
-                            span class="doc-row-num" { (idx + 1) }
-                            @if can_open {
-                                div class="doc-file-cell" {
-                                    a href={(format!("/units/{}?doc={}", target_unit_id, document.id))} class="document-link" data-profile-doc-open=(&document.id) {
-                                        span class="document-filename" title=(&document.file_name) { (short_name) }
-                                    }
-                                }
-                            } @else {
-                                div class="doc-file-cell" {
-                                    span class="document-link document-link-disabled" {
-                                        span class="document-filename" title=(&document.file_name) { (short_name) }
-                                    }
-                                }
-                            }
-                            @if enable_shared_tools {
-                                div class="doc-method-wrap" data-doc-method-wrap=(&document.id) {
-                                    button type="button" class="doc-method-pick" data-doc-method-toggle=(&document.id) title="Phương thức tổng hợp" { "▾" }
-                                    div class="doc-method-menu" data-doc-method-menu=(&document.id) hidden {
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo đơn vị" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo đơn vị" }
-                                        }
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo thứ tự tên từ a-z" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo thứ tự tên từ a-z" }
-                                        }
-                                        button type="button" class="doc-method-item" data-doc-method-option=(&document.id) data-method-value="Theo độ tuổi" {
-                                            span class="doc-method-check" aria-hidden="true" { "✓" }
-                                            span { "Theo độ tuổi" }
-                                        }
-                                    }
-                                }
-                                @if !is_derived_shared_document(document) {
-                                    div class="doc-action-wrap" style="position:relative" data-doc-wrap=(&document.id) {
-                                        button type="button" class="doc-more-btn" data-doc-more=(&document.id) title="Tuỳ chọn" { "⋮" }
-                                        div class="doc-action-bar" data-doc-bar=(&document.id) hidden {
-                                            button type="button" class="doc-act-btn doc-act-delete" data-doc-action="delete" data-act-id=(&document.id) title="Xóa" { "🗑" }
-                                            button type="button" class="doc-act-btn doc-act-rename" data-doc-action="rename" data-act-id=(&document.id) title="Sửa tên" { "🖉" }
-                                            button type="button" class="doc-act-btn doc-act-up" data-doc-action="move-up" data-act-id=(&document.id) title="Di chuyển lên" { "↑" }
-                                            button type="button" class="doc-act-btn doc-act-down" data-doc-action="move-down" data-act-id=(&document.id) title="Di chuyển xuống" { "↓" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn render_quick_document_preview(
     document: &Document,
     current_org: Option<&Organization>,
@@ -3783,11 +3923,6 @@ fn render_quick_document_preview(
             }
         }
     }
-}
-
-#[allow(dead_code)]
-fn profile_document_short_name(file_name: &str) -> String {
-    file_name.chars().take(12).collect()
 }
 
 #[derive(Serialize)]
@@ -4130,6 +4265,7 @@ fn render_document_manager_page(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Quản lý tài liệu" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -4196,6 +4332,7 @@ fn render_login(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Đăng nhập hệ thống nội bộ" }
+                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().login_js_url) defer {}
@@ -4203,6 +4340,11 @@ fn render_login(
             body data-panel-root="login" {
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
+                        div class="login-brand" {
+                            img class="login-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="96" height="96";
+                            h1 class="login-brand-title" { "HỆ THỐNG NỘI BỘ" }
+                            p class="login-brand-sub" { "Quản lý tổ chức · Quân khu 5" }
+                        }
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
                             p class="login-wait-message" data-login-wait-message="true" { (message) }
                         }
@@ -4450,11 +4592,49 @@ fn base_styles() -> &'static str {
             place-items: center;
         }
         body[data-panel-root="login"] {
-            background: #ffffff !important;
+            background:
+                radial-gradient(circle at 50% 18%, rgba(209, 31, 31, 0.06), transparent 42%),
+                radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.10), transparent 55%),
+                #f6f7f9 !important;
             color: #111111;
         }
         body[data-panel-root="login"] .login-shell {
-            background: #ffffff;
+            background:
+                url("/assets/emblem.svg") center 12vh / 320px no-repeat,
+                transparent;
+        }
+        body[data-panel-root="login"] .login-shell::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            background: rgba(246, 247, 249, 0.82);
+            z-index: 0;
+        }
+        body[data-panel-root="login"] .login-shell > * { position: relative; z-index: 1; }
+        .login-brand {
+            display: grid;
+            justify-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            text-align: center;
+        }
+        .login-emblem {
+            width: 96px;
+            height: 96px;
+            filter: drop-shadow(0 6px 14px rgba(140, 17, 9, 0.28));
+        }
+        .login-brand-title {
+            margin: 6px 0 0;
+            font-size: 18px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #8c1109;
+        }
+        .login-brand-sub {
+            margin: 0;
+            font-size: 12.5px;
+            color: #6b7280;
+            letter-spacing: 0.5px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -4471,8 +4651,53 @@ fn base_styles() -> &'static str {
             border-radius: 32px;
             overflow: hidden;
             border: 1px solid #e5e7eb;
-            background: #ffffff;
+            background:
+                radial-gradient(circle at 12% 8%, rgba(209, 31, 31, 0.05), transparent 30%),
+                radial-gradient(circle at 88% 92%, rgba(205, 162, 58, 0.07), transparent 32%),
+                url("/assets/emblem.svg") right -60px bottom -60px / 360px no-repeat,
+                #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
+        }
+        .graph-stage::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 255, 255, 0.9);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .graph-stage > * { position: relative; z-index: 1; }
+        .stage-brand {
+            position: absolute;
+            left: 20px;
+            bottom: 18px;
+            z-index: 5;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 14px 8px 10px;
+            background: rgba(255, 255, 255, 0.82);
+            border: 1px solid rgba(140, 17, 9, 0.18);
+            border-radius: 14px;
+            box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
+            backdrop-filter: blur(6px);
+        }
+        .stage-brand-emblem {
+            width: 46px;
+            height: 46px;
+            filter: drop-shadow(0 2px 5px rgba(140, 17, 9, 0.25));
+        }
+        .stage-brand-text { display: grid; line-height: 1.15; }
+        .stage-brand-title {
+            font-size: 12.5px;
+            font-weight: 800;
+            letter-spacing: 1px;
+            color: #8c1109;
+        }
+        .stage-brand-sub { font-size: 11px; color: #6b7280; letter-spacing: 0.4px; }
+        @media (max-width: 720px) {
+            .stage-brand { left: 12px; bottom: 12px; padding: 6px 10px 6px 8px; }
+            .stage-brand-emblem { width: 36px; height: 36px; }
         }
         .minimal-stage { min-height: calc(100vh - 28px); }
         .floating-controls {
@@ -5496,6 +5721,92 @@ fn base_styles() -> &'static str {
         .report-tab-bar + .report-edit-surface { border-radius: 0 0 10px 10px; }
         .report-edit-surface.is-editing { border-color: #111111; box-shadow: inset 0 0 0 1px #111111; }
         .report-document { color: #111111; background: #ffffff; display: grid; gap: 12px; line-height: 1.45; font-family: "Times New Roman", Times, serif; }
+        .report-letterhead {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 6px 4px 14px;
+            border-bottom: 2.5px solid #8c1109;
+            margin-bottom: 4px;
+        }
+        .report-letterhead-emblem {
+            flex: 0 0 64px;
+            width: 64px;
+            height: 64px;
+            background: url("/assets/emblem.svg") center / contain no-repeat;
+        }
+        .report-letterhead-text { display: grid; gap: 2px; }
+        .report-letterhead-over { font-size: 0.82rem; font-weight: 700; letter-spacing: 2px; color: #8c1109; }
+        .report-letterhead-title { margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: 1px; color: #111111; }
+        .report-letterhead-unit { margin: 0; font-size: 0.92rem; color: #374151; }
+        body[data-panel-root="manage"] {
+            background:
+                radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.08), transparent 55%),
+                #f4f5f7 !important;
+            color: #111111;
+        }
+        .manage-shell { max-width: 1080px; margin: 0 auto; padding: 22px 18px 60px; }
+        .manage-header {
+            display: flex; align-items: center; gap: 14px;
+            padding: 14px 18px; margin-bottom: 18px;
+            background: #ffffff; border-radius: 16px;
+            border-left: 5px solid #8c1109;
+            box-shadow: 0 8px 22px rgba(17, 24, 39, 0.08);
+        }
+        .manage-emblem { width: 56px; height: 56px; }
+        .manage-header-text { display: grid; gap: 2px; margin-right: auto; }
+        .manage-over { font-size: 0.74rem; font-weight: 700; letter-spacing: 2px; color: #8c1109; }
+        .manage-title { margin: 0; font-size: 1.3rem; font-weight: 800; color: #111111; }
+        .manage-header-actions { display: flex; gap: 8px; }
+        .manage-link-btn {
+            text-decoration: none; color: #111111; background: #ffffff;
+            border: 1.5px solid #111111; border-radius: 8px;
+            padding: 7px 14px; font-size: 0.85rem; font-weight: 600; white-space: nowrap;
+        }
+        .manage-link-btn:hover { background: #111111; color: #ffffff; }
+        .manage-card {
+            background: #ffffff; border: 1px solid #e5e7eb; border-radius: 16px;
+            padding: 18px 20px; margin-bottom: 16px;
+            box-shadow: 0 6px 16px rgba(17, 24, 39, 0.05);
+        }
+        .manage-card h2 { margin: 0 0 12px; font-size: 1.05rem; color: #111111; border-bottom: 1px solid #eef0f3; padding-bottom: 8px; }
+        .manage-table-wrap { overflow-x: auto; }
+        .manage-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .manage-table th, .manage-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
+        .manage-table th { color: #6b7280; font-weight: 700; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.4px; }
+        .manage-list { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+        .manage-list a { color: #1a56d6; font-weight: 600; text-decoration: none; }
+        .manage-list a:hover { text-decoration: underline; }
+        .manage-add, .manage-edit { margin-top: 12px; }
+        .manage-add > summary, .manage-edit > summary {
+            cursor: pointer; display: inline-block; font-weight: 700; color: #8c1109;
+            padding: 6px 10px; border: 1.5px dashed #8c1109; border-radius: 8px; font-size: 0.85rem;
+        }
+        .manage-edit > summary { color: #1a56d6; border-color: #b9c6e6; }
+        .manage-add[open] > summary, .manage-edit[open] > summary { margin-bottom: 10px; }
+        .manage-form-grid {
+            display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px;
+            background: #fafbfc; border: 1px solid #eef0f3; border-radius: 12px; padding: 14px;
+        }
+        .manage-form-grid label { display: grid; gap: 4px; font-size: 0.8rem; color: #374151; font-weight: 600; }
+        .manage-form-grid input[type=text], .manage-form-grid input[type=number],
+        .manage-form-grid input[type=password], .manage-form-grid select {
+            border: 1.5px solid #cbd2dc; border-radius: 8px; padding: 8px 10px; font-size: 0.9rem; background: #ffffff; color: #111111;
+        }
+        .manage-form-grid input:focus, .manage-form-grid select:focus { outline: none; border-color: #8c1109; }
+        .manage-span2 { grid-column: 1 / -1; }
+        .manage-check { flex-direction: row; align-items: center; display: flex; gap: 8px; font-weight: 600; }
+        .manage-check input { width: 16px; height: 16px; }
+        .manage-submit {
+            grid-column: 1 / -1; justify-self: start;
+            background: #8c1109; color: #ffffff; border: 0; border-radius: 8px;
+            padding: 9px 18px; font-weight: 700; font-size: 0.88rem; cursor: pointer;
+        }
+        .manage-submit:hover { background: #a8160d; }
+        .manage-submit-sm { padding: 5px 12px; font-size: 0.8rem; }
+        .manage-inline-form { margin: 0; }
+        .manage-note { margin: 10px 0 0; font-size: 0.82rem; }
+        @media (max-width: 640px) { .manage-form-grid { grid-template-columns: 1fr; } }
         .report-word-ribbon {
             display: flex;
             flex-wrap: nowrap;
@@ -6895,6 +7206,8 @@ struct LoginForm {
 #[derive(Deserialize)]
 struct CsrfForm {
     csrf: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6908,6 +7221,8 @@ struct OrgForm {
     role: String,
     tree_key_enabled: Option<String>,
     admin_key: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6925,6 +7240,8 @@ struct MemberForm {
     phone: String,
     #[serde(default)]
     joined_at: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6934,6 +7251,8 @@ struct ActivityForm {
     year: i32,
     status: String,
     summary: String,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6944,6 +7263,8 @@ struct UserForm {
     role: String,
     org_id: String,
     tree_key_enabled: Option<String>,
+    #[serde(default)]
+    return_to: String,
 }
 
 #[derive(Deserialize)]
@@ -6978,6 +7299,15 @@ struct MemberUpdateForm {
     #[serde(default)]
     notes: String,
     active: Option<String>,
+    #[serde(default)]
+    return_to: String,
+}
+
+/// Đích chuyển hướng sau khi thao tác ghi: dùng return_to nội bộ nếu hợp lệ,
+/// nếu không thì về trang chủ.
+fn redirect_back(return_to: &str) -> Response {
+    let target = sanitize_local_return_target(return_to).unwrap_or_else(|| "/".to_owned());
+    Redirect::to(&target).into_response()
 }
 
 fn normalize_sync_key(value: &str) -> Option<String> {
@@ -7153,10 +7483,9 @@ mod tests {
         models::{Document, Organization, User, UserRole, now_string},
         storage::Storage,
         web::{
-            ProfileAccess, profile_access, render_profile_document_name_list, tree_visible_ids,
+            ProfileAccess, profile_access, tree_visible_ids,
             visible_org_ids,
         },
-        zk::ZkState,
     };
     use axum::{
         body::{Body, to_bytes},
@@ -7209,9 +7538,6 @@ mod tests {
             state: AppState {
                 data: Arc::new(RwLock::new(data)),
                 storage,
-                zk_state: Arc::new(RwLock::new(
-                    ZkState::load_or_create(base_dir.join("zk")).expect("zk state"),
-                )),
                 sessions: Arc::new(RwLock::new(HashMap::new())),
                 login_attempts: Arc::new(RwLock::new(HashMap::new())),
                 dashboard_tree_states: Arc::new(RwLock::new(HashMap::new())),
@@ -8032,47 +8358,6 @@ mod tests {
         assert_eq!(bytes.as_ref(), plaintext);
     }
 
-    #[test]
-    fn empty_profile_document_panel_renders_plus_upload_tile() {
-        let shared_markup = render_profile_document_name_list(
-            &[],
-            super::ProfileDocumentNameListView {
-                current_org_id: "org-doc-leaf",
-                target_unit_id: "org-doc-leaf",
-                can_open: true,
-                csrf: "csrf-token",
-                enable_shared_tools: true,
-                can_upload: true,
-                upload_kind: Some("shared"),
-                panel_name: "branch-docs",
-            },
-        )
-        .into_string();
-        assert!(shared_markup.contains("data-profile-upload-form=\"true\""));
-        assert!(shared_markup.contains("data-profile-upload-kind=\"shared\""));
-        assert!(shared_markup.contains("/units/org-doc-leaf?panel=branch-docs"));
-        assert!(shared_markup.contains("Tải tài liệu đồng bộ"));
-        assert!(shared_markup.contains(">+<"));
-
-        let unit_markup = render_profile_document_name_list(
-            &[],
-            super::ProfileDocumentNameListView {
-                current_org_id: "org-doc-leaf",
-                target_unit_id: "org-doc-leaf",
-                can_open: true,
-                csrf: "csrf-token",
-                enable_shared_tools: false,
-                can_upload: true,
-                upload_kind: Some("unit"),
-                panel_name: "unit-docs",
-            },
-        )
-        .into_string();
-        assert!(unit_markup.contains("data-profile-upload-kind=\"unit\""));
-        assert!(unit_markup.contains("/units/org-doc-leaf?panel=unit-docs"));
-        assert!(unit_markup.contains("Tải tài liệu nội bộ"));
-    }
-
     #[tokio::test]
     async fn superior_sync_receives_updated_descendant_document_delta() {
         let harness = test_harness(NetworkMode::InternetTest);
@@ -8355,117 +8640,42 @@ mod tests {
         assert_eq!(f_docs[1].preview_text, e_docs[1].preview_text);
     }
 
-    #[tokio::test]
-    async fn zk_lane_full_http_round_trip() {
-        use crate::zk::{
-            CiphertextDocumentPackage, ExternalZkUser, StoredCiphertextDocument,
-            create_client_identity, create_prepared_submission, decrypt_ciphertext_package,
+    #[test]
+    fn aggregate_keeps_single_header_when_children_have_title_rows() {
+        let make_doc = |id: &str, org: &str, body_name: &str| super::Document {
+            id: id.to_owned(),
+            org_id: org.to_owned(),
+            title: org.to_owned(),
+            file_name: format!("{org}.xlsx"),
+            mime_type: "text/plain".to_owned(),
+            preview_text: format!(
+                "DANH SACH {org}\nSTT\tHo ten\tCap bac\n1\t{body_name}\tCap uy"
+            ),
+            year: 2026,
+            encrypted_path: String::new(),
+            kem_ciphertext_b64: String::new(),
+            nonce_b64: String::new(),
+            uploaded_at: "2026-01-01".to_owned(),
+            updated_at: "2026-01-01".to_owned(),
         };
+        let slot_docs = vec![
+            ("c1".to_owned(), make_doc("d1", "c1", "Nguyen Van A")),
+            ("c2".to_owned(), make_doc("d2", "c2", "Tran Thi B")),
+            ("c3".to_owned(), make_doc("d3", "c3", "Le Van C")),
+        ];
 
-        let harness = test_harness(NetworkMode::InternetTest);
-        let app = build_router(harness.state.clone());
-        let (session_id, _csrf) =
-            login_and_get_session(&app, &harness.state, "admin", "admin").await;
-        let session_cookie = cookie_header(&session_id);
+        let aggregated = super::aggregate_shared_slot_preview(&slot_docs, "Theo đơn vị");
+        let rows = super::parse_preview_rows(&aggregated);
 
-        // Unauthenticated callers must be redirected away from /zk/lab.
-        let unauth = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/zk/lab")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(unauth.status(), StatusCode::SEE_OTHER);
-
-        // Register an external XMSS identity through /zk/users.
-        let mut identity = create_client_identity("HTTP Tester").expect("identity");
-        let registration_body = serde_json::json!({
-            "display_name": identity.display_name,
-            "xmss_public_key_b64": identity.xmss_public_key_b64,
-        });
-        let register_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/zk/users")
-                    .header(header::COOKIE, &session_cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(serde_json::to_vec(&registration_body).unwrap()))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(register_response.status(), StatusCode::CREATED);
-        let registered: ExternalZkUser = serde_json::from_slice(
-            &to_bytes(register_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("user json");
-        identity.server_user_id = Some(registered.user_id.clone());
-
-        // Submit an encrypted ciphertext package signed with XMSS.
-        let plaintext = b"site only ever sees ciphertext";
-        let prepared = create_prepared_submission(
-            &mut identity,
-            &registered.user_id,
-            "HTTP demo",
-            "http-demo.txt",
-            "text/plain",
-            plaintext,
-        )
-        .expect("prepared submission");
-        let submit_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/zk/documents")
-                    .header(header::COOKIE, &session_cookie)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&prepared.submission).unwrap(),
-                    ))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(submit_response.status(), StatusCode::CREATED);
-        let stored: StoredCiphertextDocument = serde_json::from_slice(
-            &to_bytes(submit_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("stored doc json");
-        assert_eq!(stored.xmss_signature_idx, 0);
-
-        // Fetch the package back and decrypt it locally with the client's key.
-        let package_response = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(format!("/zk/documents/{}/package", stored.document_id))
-                    .header(header::COOKIE, &session_cookie)
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        assert_eq!(package_response.status(), StatusCode::OK);
-        let package: CiphertextDocumentPackage = serde_json::from_slice(
-            &to_bytes(package_response.into_body(), usize::MAX)
-                .await
-                .expect("body"),
-        )
-        .expect("package json");
-        let decrypted =
-            decrypt_ciphertext_package(&package, &prepared.decryption_key_b64).expect("decrypt");
-        assert_eq!(decrypted.as_slice(), plaintext);
+        // Đúng 1 dòng tiêu đề ở trên cùng + 3 dòng dữ liệu, không còn tựa đề/ tiêu đề lặp.
+        let header_count = rows.iter().filter(|row| super::looks_like_header_row(row)).count();
+        assert_eq!(header_count, 1, "phải chỉ còn 1 dòng tiêu đề: {rows:?}");
+        assert_eq!(rows.len(), 4, "1 tiêu đề + 3 dữ liệu: {rows:?}");
+        assert!(super::looks_like_header_row(&rows[0]));
+        assert_eq!(rows[1][0], "1");
+        assert_eq!(rows[2][0], "2");
+        assert_eq!(rows[3][0], "3");
+        assert!(!aggregated.contains("DANH SACH"), "tựa đề con phải bị loại bỏ");
     }
 }
 
@@ -9130,28 +9340,79 @@ fn extract_age_value(row: &[String]) -> i32 {
     best
 }
 
+/// Các từ khóa nhận diện dòng tiêu đề cột trong một bảng danh sách.
+const HEADER_ROW_KEYWORDS: &[&str] = &[
+    "stt",
+    "sothutu",
+    "hoten",
+    "hovaten",
+    "ngaysinh",
+    "sinhngay",
+    "namsinh",
+    "trinhdo",
+    "capbac",
+    "chucvu",
+    "hoatdongcuadonvi",
+    "mucdohoanthanhnhiemvu",
+    "diachi",
+    "sodienthoai",
+    "ngayvaotochuc",
+    "donvi",
+    "quequan",
+];
+
+/// Một dòng được coi là dòng tiêu đề nếu có từ 2 ô trở lên khớp với từ khóa tiêu đề.
+/// Ngưỡng 2 ô giúp tránh nhầm dòng dữ liệu (ví dụ ô tên người) thành tiêu đề.
+fn looks_like_header_row(row: &[String]) -> bool {
+    row.iter()
+        .filter(|cell| {
+            let key = normalize_header_key(cell);
+            !key.is_empty() && HEADER_ROW_KEYWORDS.contains(&key.as_str())
+        })
+        .count()
+        >= 2
+}
+
 fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str) -> String {
     let canonical = method.trim().to_ascii_lowercase();
 
-    if canonical.contains("a-z") || canonical.contains("tên") {
-        let mut header: Option<Vec<String>> = None;
-        let mut body_rows: Vec<Vec<String>> = Vec::new();
-        for (_, document) in slot_docs {
-            let rows = parse_preview_rows(&document.preview_text);
-            if rows.is_empty() {
-                continue;
-            }
-            if header.is_none() {
-                header = rows.first().cloned();
-            }
-            body_rows.extend(rows.into_iter().skip(1));
+    // Gom dữ liệu từ nhiều đơn vị con: chỉ giữ DUY NHẤT một dòng tiêu đề ở trên cùng.
+    // Mỗi tài liệu con có thể có dòng tựa đề phía trên dòng tiêu đề cột; ta dò đúng
+    // dòng tiêu đề theo nội dung, bỏ phần tựa đề và mọi dòng tiêu đề bị lặp lại.
+    let mut header: Option<Vec<String>> = None;
+    let mut body_rows: Vec<Vec<String>> = Vec::new();
+    for (_, document) in slot_docs {
+        let rows = parse_preview_rows(&document.preview_text);
+        if rows.is_empty() {
+            continue;
         }
+        match rows.iter().position(|row| looks_like_header_row(row)) {
+            Some(header_idx) => {
+                if header.is_none() {
+                    header = Some(rows[header_idx].clone());
+                }
+                for (index, row) in rows.into_iter().enumerate() {
+                    // Bỏ phần tựa đề (đứng trước tiêu đề), bỏ chính dòng tiêu đề,
+                    // và bỏ mọi dòng tiêu đề lặp lại nằm trong phần thân.
+                    if index <= header_idx || looks_like_header_row(&row) {
+                        continue;
+                    }
+                    body_rows.push(row);
+                }
+            }
+            None => {
+                // Không dò được tiêu đề: coi dòng đầu là tiêu đề (giữ hành vi cũ).
+                if header.is_none() {
+                    header = rows.first().cloned();
+                }
+                body_rows.extend(rows.into_iter().skip(1));
+            }
+        }
+    }
+
+    if canonical.contains("a-z") || canonical.contains("tên") {
         body_rows.sort_by(|left, right| {
-            let left_key = left
-                .first()
-                .cloned()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let left_key = left.first().cloned().unwrap_or_default().to_ascii_lowercase();
             let right_key = right
                 .first()
                 .cloned()
@@ -9159,58 +9420,15 @@ fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str)
                 .to_ascii_lowercase();
             left_key.cmp(&right_key)
         });
-        let mut merged = Vec::new();
-        if let Some(head) = header {
-            merged.push(head);
-        }
-        merged.extend(body_rows);
-        renumber_stt_column(&mut merged);
-        collapse_unit_activity_column(&mut merged);
-        return serialize_preview_rows(&merged);
-    }
-
-    if canonical.contains("độ tuổi") || canonical.contains("tuoi") {
-        let mut header: Option<Vec<String>> = None;
-        let mut body_rows: Vec<Vec<String>> = Vec::new();
-        for (_, document) in slot_docs {
-            let rows = parse_preview_rows(&document.preview_text);
-            if rows.is_empty() {
-                continue;
-            }
-            if header.is_none() {
-                header = rows.first().cloned();
-            }
-            body_rows.extend(rows.into_iter().skip(1));
-        }
+    } else if canonical.contains("độ tuổi") || canonical.contains("tuoi") {
         body_rows.sort_by_key(|row| extract_age_value(row));
-        let mut merged = Vec::new();
-        if let Some(head) = header {
-            merged.push(head);
-        }
-        merged.extend(body_rows);
-        renumber_stt_column(&mut merged);
-        collapse_unit_activity_column(&mut merged);
-        return serialize_preview_rows(&merged);
     }
 
-    let mut header: Option<Vec<String>> = None;
-    let mut merged: Vec<Vec<String>> = Vec::new();
-    for (_, document) in slot_docs {
-        let rows = parse_preview_rows(&document.preview_text);
-        if rows.is_empty() {
-            continue;
-        }
-        if header.is_none() {
-            header = rows.first().cloned();
-            if let Some(head) = header.clone() {
-                merged.push(head);
-            }
-            merged.extend(rows.into_iter().skip(1));
-            continue;
-        }
-
-        merged.extend(rows.into_iter().skip(1));
+    let mut merged = Vec::new();
+    if let Some(head) = header {
+        merged.push(head);
     }
+    merged.extend(body_rows);
     renumber_stt_column(&mut merged);
     collapse_unit_activity_column(&mut merged);
     serialize_preview_rows(&merged)

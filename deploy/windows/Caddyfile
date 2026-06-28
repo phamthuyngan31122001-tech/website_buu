@@ -1,0 +1,22 @@
+# Caddy reverse proxy + HTTPS TU DONG cho website_buu (Windows VPS).
+# Caddy tu xin chung chi Let's Encrypt va tu gia han -> khong can lam gi them.
+# Yeu cau: DNS blacknull.net -> IP VPS, mo cong 80 va 443.
+#
+# Doi email cua ban (de nhan thong bao chung chi).
+# Chay thu: caddy.exe run --config Caddyfile
+# (setup.ps1 se cai Caddy thanh service chay nen tu dong.)
+
+{
+	email admin@blacknull.net
+}
+
+# Phuc vu ca ten mien goc va www. App chay HTTP noi bo o 127.0.0.1:18088.
+blacknull.net, www.blacknull.net {
+	encode gzip
+	reverse_proxy 127.0.0.1:18088 {
+		header_up X-Forwarded-Proto https
+	}
+	request_body {
+		max_size 50MB
+	}
+}

@@ -1,6 +1,10 @@
-# Script tu dong ket noi lai SSH tunnel khi bi ngat
+# Script tu dong ket noi lai SSH tunnel (localhost.run) khi bi ngat.
 # Cach chay: powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1
 # Dung: Ctrl+C
+#
+# ⚠️  CANH BAO: localhost.run ban mien phi cap URL *.lhr.life NGAU NHIEN moi
+#     lan ket noi lai -> link DOI lien tuc, KHONG the co dinh "vinh vien".
+#     De co LINK CO DINH on dinh, dung: scripts\tunnel-ngrok.ps1 (ngrok static domain).
 
 $LocalPort   = 18088
 $RemotePort  = 80

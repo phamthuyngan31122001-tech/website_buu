@@ -1,0 +1,41 @@
+# systemd unit cho website_buu — chay on dinh, tu khoi dong lai, tu bat khi reboot.
+# Cai dat:
+#   sudo cp deploy/website_buu.service /etc/systemd/system/website_buu.service
+#   sudo nano /etc/systemd/system/website_buu.service   # sua APP_BOOTSTRAP_PASSWORD
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now website_buu
+#   sudo systemctl status website_buu
+#   journalctl -u website_buu -f          # xem log
+
+[Unit]
+Description=Website Buu - he thong noi bo Quan khu 5
+After=network.target
+
+[Service]
+Type=simple
+User=wwwbuu
+WorkingDirectory=/opt/website_buu
+# Lang nghe cuc bo, de nginx (TLS) o phia truoc proxy vao day:
+Environment=APP_BIND_ADDR=127.0.0.1:18088
+# Public VPS: PHAI dat internet-test (lan-only se chan IP cong khai):
+Environment=APP_NETWORK_MODE=internet-test
+# Co nginx dat X-Forwarded-Proto=https -> bat HTTPS de cookie an toan:
+Environment=APP_REQUIRE_HTTPS=1
+Environment=APP_RUNTIME_DIR=/opt/website_buu/runtime
+Environment=AWS_LC_SYS_NO_ASM=1
+# >>> DOI MAT KHAU ADMIN MANH TRUOC KHI CHAY THAT <<<
+Environment=APP_BOOTSTRAP_USERNAME=Admin@1999
+Environment=APP_BOOTSTRAP_PASSWORD=DOI_MAT_KHAU_NAY
+ExecStart=/opt/website_buu/website_buu
+Restart=always
+RestartSec=3
+
+# Tang cuong bao mat
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/website_buu/runtime
+
+[Install]
+WantedBy=multi-user.target

@@ -7,3 +7,6 @@
 /cloudflared*.exe
 /ngrok.exe
 /ngrok.zip
+# Bí mật triển khai - KHÔNG commit
+.env
+deploy/docker/.env

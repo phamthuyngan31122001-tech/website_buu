@@ -1,0 +1,53 @@
+# Triển khai production: app (Rust) + Caddy (HTTPS tự động) + Watchtower (tự cập nhật).
+# Dùng trên VPS Linux. Xem DEPLOY-DOCKER.md.
+#
+#   docker compose up -d
+#
+# Mỗi lần bạn push code lên nhánh main -> GitHub Actions build image mới ->
+# Watchtower (mỗi 60s) tự kéo về và cập nhật app -> website tự đổi theo.
+
+services:
+  app:
+    # Đổi OWNER cho đúng tài khoản/repo GitHub của bạn (chữ thường).
+    image: ${IMAGE:-ghcr.io/phamthuyngan31122001-tech/website_buu:latest}
+    restart: unless-stopped
+    environment:
+      APP_BIND_ADDR: "0.0.0.0:18088"
+      APP_NETWORK_MODE: "internet-test"
+      APP_REQUIRE_HTTPS: "1"
+      APP_RUNTIME_DIR: "/data"
+      APP_BOOTSTRAP_USERNAME: "${APP_BOOTSTRAP_USERNAME}"
+      APP_BOOTSTRAP_PASSWORD: "${APP_BOOTSTRAP_PASSWORD}"
+      APP_TREE_KEY: "${APP_TREE_KEY:-}"
+    volumes:
+      - buu_data:/data            # dữ liệu + khóa mã hóa, KHÔNG mất khi cập nhật
+    expose:
+      - "18088"
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # lưu chứng chỉ HTTPS (tự gia hạn)
+      - caddy_config:/config
+    depends_on:
+      - app
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Chỉ theo dõi container có nhãn enable=true (app). Kiểm tra mỗi 60s, dọn image cũ.
+    command: --interval 60 --cleanup --label-enable
+
+volumes:
+  buu_data:
+  caddy_data:
+  caddy_config:

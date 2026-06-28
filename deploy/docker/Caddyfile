@@ -1,0 +1,13 @@
+# Caddy: HTTPS tự động (Let's Encrypt) + reverse proxy vào app trong cùng compose.
+# Đổi email + tên miền cho đúng của bạn.
+
+{
+	email admin@blacknull.net
+}
+
+blacknull.net, www.blacknull.net {
+	encode gzip
+	reverse_proxy app:18088 {
+		header_up X-Forwarded-Proto https
+	}
+}
