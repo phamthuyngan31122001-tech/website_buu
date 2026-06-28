@@ -9880,7 +9880,10 @@ fn dashboard_script() -> &'static str {
 
     document.addEventListener('click', (event) => {
         const inside = event.target.closest('.panel-shell, [data-panel-toggle]');
-        if (!inside) closePanels();
+        // Khi đang bật chỉnh sửa giao diện: KHÔNG tự đóng panel (chứa nút chỉnh
+        // sửa) khi click ra ngoài. Chỉ tự đóng khi đã tắt chỉnh sửa giao diện.
+        const editing = !!document.querySelector('[data-tree-edit-toggle="true"][data-editing="true"]');
+        if (!inside && !editing) closePanels();
     });
 
     if (initialPanel) {
@@ -10292,10 +10295,15 @@ fn dashboard_script() -> &'static str {
             const snapshotIds = Array.from(template.content.querySelectorAll('g.tree-node-group[data-org-id]'))
                 .map((node) => node.getAttribute('data-org-id'))
                 .filter(Boolean);
+            const snapshotIdSet = new Set(snapshotIds);
             const hasOutOfScopeNode = snapshotIds.some((id) => !initialTreeNodeIds.has(id) && !String(id).startsWith('synthetic-'));
+            // Snapshot cũ/thiếu: nếu cây thật hiện có đơn vị mà snapshot không có
+            // (vd vừa tạo thêm đơn vị, hoặc snapshot lưu từ trước khi có đủ nhánh)
+            // thì bỏ snapshot để luôn hiển thị ĐẦY ĐỦ cây thật.
+            const hasMissingNode = Array.from(initialTreeNodeIds).some((id) => !snapshotIdSet.has(id));
             const hasLegacyCircleNodes = template.content.querySelector('circle.tree-node');
             const hasLegacyIconNodes = template.content.querySelector('.tree-node-icon');
-            if (layoutVersionMismatch || hasOutOfScopeNode || hasLegacyCircleNodes || hasLegacyIconNodes) {
+            if (layoutVersionMismatch || hasOutOfScopeNode || hasMissingNode || hasLegacyCircleNodes || hasLegacyIconNodes) {
                 snapshot = { ...snapshot, panzoomHtml: '' };
             }
         }
@@ -11566,7 +11574,9 @@ fn profile_script() -> &'static str {
         }
 
         const docs = new Map(records.map((item) => [item.id, { ...item }]));
-        const defaultDocId = profileDocRoot.getAttribute('data-default-doc-id') || records[0]?.id || '';
+        // Chỉ mở mặc định tài liệu CỦA CHÍNH đơn vị. Nếu đơn vị chưa có tài liệu
+        // riêng thì để trống (không tự lấy bảng tổng hợp của cấp trên đẩy vào).
+        const defaultDocId = profileDocRoot.getAttribute('data-default-doc-id') || '';
         const selectedDocId = profileDocRoot.getAttribute('data-selected-doc-id') || '';
         const canEdit = profileDocRoot.getAttribute('data-can-edit') === 'true';
         const unitIsLeaf = profileDocRoot.getAttribute('data-unit-is-leaf') === 'true';
