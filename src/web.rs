@@ -2574,14 +2574,15 @@ async fn create_tree_node(
     let Some((user, session)) = require_session(&state, &jar).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if user.role != UserRole::RootAdmin {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     if validate_csrf(&session, &form.csrf).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
 
     let mut data = state.data.write().await;
+    // RootAdmin hoặc tài khoản cấp trên quản lý được nhánh cha mới được tạo con.
+    if !can_manage_org(&user, &form.parent_id, &data) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let Some(parent) = data
         .organizations
         .iter()
@@ -2633,9 +2634,6 @@ async fn rename_tree_node(
     let Some((user, session)) = require_session(&state, &jar).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if user.role != UserRole::RootAdmin {
-        return StatusCode::FORBIDDEN.into_response();
-    }
     if validate_csrf(&session, &form.csrf).is_err() {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -2644,6 +2642,9 @@ async fn rename_tree_node(
         return StatusCode::BAD_REQUEST.into_response();
     }
     let mut data = state.data.write().await;
+    if !can_manage_org(&user, &org_id, &data) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
     let Some(org) = data.organizations.iter_mut().find(|org| org.id == org_id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -4596,7 +4597,7 @@ fn base_styles() -> &'static str {
         }
         body[data-panel-root="login"] .login-shell {
             min-height: auto;
-            padding-top: 28px;
+            padding-top: 72px;
         }
         .card, .sub-card {
             background: var(--paper);
