@@ -10842,11 +10842,14 @@ fn dashboard_script() -> &'static str {
 
     const hideCredCard = () => { if (credCard) credCard.hidden = true; };
     const positionCredCardForNode = (nodeGroup) => {
-        if (!credCard || !nodeGroup) return;
+        if (!credCard) return;
+        // Đặt bảng tài khoản LỆCH SANG PHẢI panel nút (key/+/sửa/xóa) để không
+        // chồng lấn lên nhau.
         const vr = viewport.getBoundingClientRect();
-        const nr = nodeGroup.getBoundingClientRect();
-        credCard.style.left = (nr.left - vr.left + nr.width / 2) + 'px';
-        credCard.style.top = (nr.bottom - vr.top + 10) + 'px';
+        const er = nodeEditor.getBoundingClientRect();
+        credCard.style.left = (er.right - vr.left + 28) + 'px';
+        credCard.style.top = (er.top - vr.top) + 'px';
+        credCard.style.transform = 'none';
     };
     credentialsButton?.addEventListener('click', async (event) => {
         event.preventDefault();
