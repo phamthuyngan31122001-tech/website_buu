@@ -20,9 +20,10 @@ git checkout $Branch
 git pull origin $Branch
 
 Write-Host "2) Build release ..." -ForegroundColor Cyan
-$env:AWS_LC_SYS_NO_ASM = "1"
+# LUU Y: ban release CAN nasm (https://www.nasm.us). KHONG dat AWS_LC_SYS_NO_ASM
+# vi aws-lc-sys chi cho NO_ASM o ban debug.
 cargo build --release
-if ($LASTEXITCODE -ne 0) { Write-Host "Build that bai." -ForegroundColor Red; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Host "Build that bai (kiem tra da cai nasm + cmake + perl chua)." -ForegroundColor Red; exit 1 }
 
 Write-Host "3) Cap nhat exe + restart service ..." -ForegroundColor Cyan
 & $Nssm stop website_buu

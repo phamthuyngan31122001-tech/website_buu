@@ -29,11 +29,11 @@ Internet ──HTTPS──> Caddy (cổng 443, tự xin Let's Encrypt)
 ## CÁCH A — Nhanh nhất: build ở máy bạn, copy exe sang VPS (khuyến nghị)
 Máy dev của bạn đã build được rồi nên đỡ phải cài toolchain trên VPS.
 
-**Trên máy DEV:**
+**Trên máy DEV** (cần đã cài Rust + CMake + Perl + **NASM** để build release):
 ```powershell
 cd <thu-muc-project>
 git pull origin claude/bug-fixes-cleanup-7gybqt
-$env:AWS_LC_SYS_NO_ASM="1"; cargo build --release
+cargo build --release
 # File can copy: target\release\website_buu.exe
 ```
 **Copy sang VPS:** kéo-thả `website_buu.exe` qua cửa sổ RDP (hoặc dùng ổ đĩa chia sẻ RDP).
@@ -65,13 +65,15 @@ Cần cài toolchain trên VPS (nặng hơn lúc build, nhưng cập nhật bằ
 1. **Rust**: tải https://win.rustup.rs → chạy, chọn mặc định (cần "Visual Studio C++ Build Tools" — rustup sẽ nhắc cài).
 2. **CMake**: https://cmake.org/download (nhớ chọn "Add to PATH").
 3. **Perl**: Strawberry Perl https://strawberryperl.com (aws-lc cần).
-4. **Git**: https://git-scm.com/download/win
-5. Mở **PowerShell Administrator mới** (để nhận PATH), rồi:
+4. **NASM**: https://www.nasm.us/ → cài và thêm vào PATH (BẮT BUỘC cho bản
+   release; aws-lc-sys chỉ cho bỏ nasm ở bản debug).
+5. **Git**: https://git-scm.com/download/win
+6. Mở **PowerShell Administrator mới** (để nhận PATH), rồi:
 ```powershell
 cd C:\
 git clone -b claude/bug-fixes-cleanup-7gybqt <URL_REPO> C:\website_buu_src
 cd C:\website_buu_src
-$env:AWS_LC_SYS_NO_ASM="1"; cargo build --release
+cargo build --release
 powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 `
   -Domain blacknull.net -BootstrapUser Admin@1999 -BootstrapPass "DAT_MAT_KHAU_MANH"
 ```

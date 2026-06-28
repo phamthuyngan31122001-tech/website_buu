@@ -1,0 +1,11 @@
+target/
+runtime/
+.git/
+*.exe
+ngrok.exe
+cloudflared.exe
+**/*.log
+.github/
+deploy/
+/tmp/
+scratchpad/

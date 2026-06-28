@@ -17,7 +17,7 @@ A    qk5.blacknull.net    ->    <IP_CONG_KHAI_CUA_VPS>
 ## 2. Cài công cụ build trên VPS
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake pkg-config perl git curl nginx
+sudo apt install -y build-essential cmake nasm pkg-config perl git curl nginx
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 source "$HOME/.cargo/env"
 ```
@@ -27,7 +27,7 @@ source "$HOME/.cargo/env"
 sudo mkdir -p /opt/website_buu && sudo chown $USER /opt/website_buu
 git clone -b claude/bug-fixes-cleanup-7gybqt <URL_REPO_GIT> /opt/website_buu/src
 cd /opt/website_buu/src
-AWS_LC_SYS_NO_ASM=1 cargo build --release
+cargo build --release
 cp target/release/website_buu /opt/website_buu/website_buu
 ```
 (Build lần đầu khá lâu ~vài phút. RAM thấp <1GB có thể cần thêm swap.)
@@ -79,7 +79,7 @@ Truy cập: **https://qk5.blacknull.net**
 ```bash
 cd /opt/website_buu/src
 git pull
-AWS_LC_SYS_NO_ASM=1 cargo build --release
+cargo build --release
 sudo cp target/release/website_buu /opt/website_buu/website_buu
 sudo systemctl restart website_buu
 ```
