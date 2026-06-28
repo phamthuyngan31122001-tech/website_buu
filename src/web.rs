@@ -10140,26 +10140,11 @@ fn dashboard_script() -> &'static str {
     const applySnapshot = (snapshot) => {
         if (!snapshot) return;
         const layoutVersionMismatch = snapshot.layoutVersion !== TREE_LAYOUT_VERSION;
-        if (snapshot.panzoomHtml) {
-            const template = document.createElement('template');
-            template.innerHTML = snapshot.panzoomHtml;
-            const snapshotIds = Array.from(template.content.querySelectorAll('g.tree-node-group[data-org-id]'))
-                .map((node) => node.getAttribute('data-org-id'))
-                .filter(Boolean);
-            const snapshotIdSet = new Set(snapshotIds);
-            const hasOutOfScopeNode = snapshotIds.some((id) => !initialTreeNodeIds.has(id) && !String(id).startsWith('synthetic-'));
-            // Snapshot cũ/thiếu: nếu cây thật hiện có đơn vị mà snapshot không có
-            // (vd vừa tạo thêm đơn vị, hoặc snapshot lưu từ trước khi có đủ nhánh)
-            // thì bỏ snapshot để luôn hiển thị ĐẦY ĐỦ cây thật.
-            const hasMissingNode = Array.from(initialTreeNodeIds).some((id) => !snapshotIdSet.has(id));
-            const hasLegacyCircleNodes = template.content.querySelector('circle.tree-node');
-            const hasLegacyIconNodes = template.content.querySelector('.tree-node-icon');
-            if (layoutVersionMismatch || hasOutOfScopeNode || hasMissingNode || hasLegacyCircleNodes || hasLegacyIconNodes) {
-                snapshot = { ...snapshot, panzoomHtml: '' };
-            }
-        }
+        // CHỈ DÙNG 1 LOGIC DỰNG CÂY: luôn lấy bố cục chuẩn do máy chủ dựng sẵn
+        // (build_tree_layout) cho MỌI đơn vị, kể cả nút mới thêm -> vị trí nhất
+        // quán, gọn đẹp như cây của e2. Không khôi phục bố cục thủ công đã lưu;
+        // chỉ giữ lại mức thu phóng / vị trí khung nhìn (scale, tx, ty).
         clearNodeSelection();
-        panzoom.innerHTML = snapshot.panzoomHtml || panzoom.innerHTML;
         userAccounts = snapshot.userAccounts || { ...initialUserAccounts };
         syntheticNodeCount = snapshot.syntheticNodeCount || 0;
         if (!layoutVersionMismatch) {
