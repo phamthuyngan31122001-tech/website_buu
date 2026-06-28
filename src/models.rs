@@ -52,6 +52,9 @@ pub struct User {
     pub id: String,
     pub username: String,
     pub password_hash: String,
+    /// Mật khẩu dạng rõ — chỉ phục vụ cấp trên xem/quản lý tài khoản cấp dưới
+    /// trong mạng nội bộ. Rỗng nếu không rõ (tài khoản cũ lưu trước đây).
+    pub password_plain: String,
     pub role: UserRole,
     pub org_id: Option<String>,
     pub tree_key_enabled: bool,

@@ -488,6 +488,10 @@ fn build_router(state: AppState) -> Router {
             "/dashboard/tree-nodes/{id}/delete",
             post(delete_tree_node),
         )
+        .route(
+            "/dashboard/tree-nodes/{id}/credentials",
+            get(tree_node_credentials),
+        )
         .route("/units/{unit_id}/members/{member_id}", post(update_member))
         .route("/login", post(login))
         .route("/logout", post(logout))
@@ -905,6 +909,7 @@ async fn update_password_settings(
             .into_response();
     };
     target_user.password_hash = password_hash;
+    target_user.password_plain = new_password.to_owned();
 
     if persist(&state, &data).is_err() {
         return (
@@ -1075,6 +1080,7 @@ fn ensure_bootstrap_admin(data: &mut AppData) -> anyhow::Result<()> {
         id: new_id("user"),
         username: bootstrap_username.clone(),
         password_hash: hash_password(&bootstrap_password)?,
+        password_plain: bootstrap_password.clone(),
         role: UserRole::RootAdmin,
         org_id: None,
         tree_key_enabled: true,
@@ -1443,6 +1449,7 @@ fn add_seed_user(
         id: new_id("user"),
         username,
         password_hash: hash_password(&password)?,
+        password_plain: password.clone(),
         role,
         org_id: Some(org.id.clone()),
         tree_key_enabled,
@@ -2347,6 +2354,7 @@ async fn create_root_org(
             Ok(hash) => hash,
             Err(_) => return internal_error("Không tạo được tài khoản quản lý."),
         },
+        password_plain: form.password.clone(),
         role: UserRole::from_value(&form.role),
         org_id: Some(org_id),
         tree_key_enabled: form.tree_key_enabled.is_some(),
@@ -2404,6 +2412,7 @@ async fn create_child_org(
             Ok(hash) => hash,
             Err(_) => return internal_error("Không tạo được tài khoản quản lý cho nhánh."),
         },
+        password_plain: form.password.clone(),
         role: UserRole::from_value(&form.role),
         org_id: Some(org_id),
         tree_key_enabled: form.tree_key_enabled.is_some(),
@@ -2515,6 +2524,7 @@ async fn create_tree_node(
         id: new_id("user"),
         username: credential.clone(),
         password_hash,
+        password_plain: credential.clone(),
         role: UserRole::OrgManager,
         org_id: Some(org_id.clone()),
         tree_key_enabled: false,
@@ -2586,6 +2596,42 @@ async fn rename_tree_node(
         return internal_error("Không lưu được tên đơn vị.");
     }
     Json(serde_json::json!({ "id": org_id, "name": name })).into_response()
+}
+
+/// Trả về tài khoản & mật khẩu của một đơn vị để cấp trên xem/quản lý.
+/// Chỉ RootAdmin hoặc tài khoản cấp trên quản lý nhánh đó mới xem được.
+async fn tree_node_credentials(
+    State(state): State<AppState>,
+    Path(org_id): Path<String>,
+    jar: CookieJar,
+) -> Response {
+    let Some((user, _session)) = require_session(&state, &jar).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let data = state.data.read().await;
+    if !can_manage_org(&user, &org_id, &data) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // Tài khoản gắn với đơn vị (nếu có).
+    let account = data
+        .users
+        .iter()
+        .find(|u| u.org_id.as_deref() == Some(org_id.as_str()) && u.active);
+    let (username, password) = match account {
+        Some(u) => (
+            u.username.clone(),
+            if u.password_plain.is_empty() {
+                "(không rõ — hãy đặt lại mật khẩu)".to_owned()
+            } else {
+                u.password_plain.clone()
+            },
+        ),
+        None => (
+            "(chưa có tài khoản)".to_owned(),
+            "(chưa có tài khoản)".to_owned(),
+        ),
+    };
+    Json(serde_json::json!({ "username": username, "password": password })).into_response()
 }
 
 /// Xóa THẬT một đơn vị và toàn bộ nhánh con của nó (đơn vị, người dùng, tài
@@ -2779,6 +2825,7 @@ async fn create_user(
             Ok(hash) => hash,
             Err(_) => return internal_error("Không tạo được mật khẩu người dùng."),
         },
+        password_plain: form.password.clone(),
         role: UserRole::from_value(&form.role),
         org_id: if form.org_id.is_empty() {
             None
@@ -4296,9 +4343,6 @@ fn render_login(
     status_message: Option<&str>,
     wait_state: Option<LoginWaitState>,
 ) -> Markup {
-    let wait_message = wait_state
-        .as_ref()
-        .map(|item| format_login_wait_countdown(item.blocked_until_epoch_ms));
     let unlock_at = wait_state
         .as_ref()
         .map(|item| item.blocked_until_epoch_ms.to_string())
@@ -4318,10 +4362,16 @@ fn render_login(
             body data-panel-root="login" {
                 img class="site-top-banner" src=(static_assets().site_bg_url) alt="Quân khu 5";
                 h1 class="login-system-title" { "HỆ THỐNG QUẢN LÝ DANH SÁCH QUẦN CHÚNG" }
+                @if wait_state.is_some() {
+                    // Đang bị khóa: ẩn hoàn toàn ô đăng nhập, chỉ hiện đếm ngược ( NN ).
+                    div class="login-locked" data-login-locked="true" data-login-unlock-at=(unlock_at) {
+                        span class="login-countdown" data-login-countdown="true" { "( -- )" }
+                    }
+                }
                 main class="login-shell" {
-                    article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
-                        @if let Some(message) = wait_message.as_deref().or(status_message) {
-                            p class="login-wait-message" data-login-wait-message="true" { (message) }
+                    article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} data-login-card="true" hidden[wait_state.is_some()] {
+                        @if let Some(message) = status_message {
+                            p class="login-wait-message" data-login-status-message="true" { (message) }
                         }
                         form method="post" action="/login" class="stack login-form-minimal" {
                             div class="login-field" {
@@ -4330,34 +4380,16 @@ fn render_login(
                             div class="login-field" {
                                 input type="password" name="password" autocomplete="current-password" aria-label="Mật khẩu" required;
                             }
-                            @if wait_state.is_some() {
-                                button
-                                    type="submit"
-                                    class="login-submit"
-                                    aria-label="Đăng nhập"
-                                    data-login-submit="true"
-                                    data-login-unlock-at=(unlock_at)
-                                    disabled
-                                {
-                                    svg class="login-submit-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                                        path class="login-submit-arrow-shaft" d="M14 32H38" {}
-                                        path class="login-submit-arrow-head" d="M30 24L40 32L30 40" {}
-                                        path class="login-submit-bracket" d="M44 14H53V50H44" {}
-                                    }
-                                }
-                            } @else {
-                                button
-                                    type="submit"
-                                    class="login-submit"
-                                    aria-label="Đăng nhập"
-                                    data-login-submit="true"
-                                    data-login-unlock-at=(unlock_at)
-                                {
-                                    svg class="login-submit-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
-                                        path class="login-submit-arrow-shaft" d="M14 32H38" {}
-                                        path class="login-submit-arrow-head" d="M30 24L40 32L30 40" {}
-                                        path class="login-submit-bracket" d="M44 14H53V50H44" {}
-                                    }
+                            button
+                                type="submit"
+                                class="login-submit"
+                                aria-label="Đăng nhập"
+                                data-login-submit="true"
+                            {
+                                svg class="login-submit-icon" viewBox="0 0 64 64" aria-hidden="true" focusable="false" {
+                                    path class="login-submit-arrow-shaft" d="M14 32H38" {}
+                                    path class="login-submit-arrow-head" d="M30 24L40 32L30 40" {}
+                                    path class="login-submit-bracket" d="M44 14H53V50H44" {}
                                 }
                             }
                         }
@@ -4473,38 +4505,32 @@ async fn register_login_failure(state: &AppState, username_key: &str) -> Option<
 }
 
 fn login_block_duration(failures: u32) -> Option<Duration> {
+    // Sai dưới 5 lần: chưa khóa. Sai 5 lần: chờ 1 phút, sau đó tăng dần.
     match failures {
-        3 => Some(Duration::minutes(1)),
-        4 => Some(Duration::minutes(3)),
-        5 => Some(Duration::minutes(5)),
-        6 => Some(Duration::minutes(10)),
-        7 => Some(Duration::minutes(30)),
-        8 => Some(Duration::hours(1)),
-        9.. => Some(Duration::hours(24)),
-        _ => None,
+        0..=4 => None,
+        5 => Some(Duration::minutes(1)),
+        6 => Some(Duration::minutes(3)),
+        7 => Some(Duration::minutes(5)),
+        8 => Some(Duration::minutes(10)),
+        9 => Some(Duration::minutes(30)),
+        10 => Some(Duration::hours(1)),
+        11.. => Some(Duration::hours(24)),
     }
 }
 
 fn login_wait_label(failures: u32) -> Option<&'static str> {
     match failures {
-        3 => Some("Chờ 1 phút"),
-        4 => Some("Chờ 3 phút"),
-        5 => Some("Chờ 5 phút"),
-        6 => Some("Chờ 10 phút"),
-        7 => Some("Chờ 30 phút"),
-        8 => Some("Chờ 1h"),
-        9.. => Some("Chờ 24h"),
-        _ => None,
+        0..=4 => None,
+        5 => Some("Chờ 1 phút"),
+        6 => Some("Chờ 3 phút"),
+        7 => Some("Chờ 5 phút"),
+        8 => Some("Chờ 10 phút"),
+        9 => Some("Chờ 30 phút"),
+        10 => Some("Chờ 1h"),
+        11.. => Some("Chờ 24h"),
     }
 }
 
-fn format_login_wait_countdown(blocked_until_epoch_ms: i64) -> String {
-    let remaining_ms = (blocked_until_epoch_ms - Utc::now().timestamp_millis()).max(0);
-    let total_seconds = (remaining_ms + 999) / 1000;
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{}:{:02}", minutes, seconds)
-}
 
 fn internal_error(message: &str) -> Response {
     (
@@ -5150,6 +5176,29 @@ fn base_styles() -> &'static str {
             align-items: center;
             gap: 8px;
         }
+        .tree-cred-card {
+            position: absolute;
+            z-index: 23;
+            min-width: 200px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            border: 1px solid #d8dee9;
+            background: #ffffff;
+            box-shadow: 0 12px 28px rgba(17, 24, 39, 0.18);
+            transform: translate(-50%, 0);
+            display: grid;
+            gap: 4px;
+        }
+        .tree-cred-card[hidden] { display: none !important; }
+        .tree-cred-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 0.85rem;
+        }
+        .tree-cred-label { color: #6b7280; }
+        .tree-cred-value { color: #111111; font-weight: 700; font-family: ui-monospace, monospace; }
         .tree-rename-input {
             min-width: 0;
             flex: 1;
@@ -7178,6 +7227,19 @@ fn base_styles() -> &'static str {
             .overlay-upload-form, .crypto-grid, .document-manager-layout { grid-template-columns: 1fr; }
             .top-control-row, .nav-rail-row, .doc-rail-row { flex-wrap: wrap; }
         }
+        .login-locked {
+            display: flex;
+            justify-content: center;
+            margin: 24px auto 0;
+        }
+        .login-countdown {
+            font-size: 1.4rem;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #8c1109;
+            font-family: ui-monospace, monospace;
+        }
+        body[data-panel-root="login"] .login-card[hidden] { display: none !important; }
     "#
 }
 
@@ -7503,6 +7565,7 @@ mod tests {
                 id: "user-test-admin".to_owned(),
                 username: "admin".to_owned(),
                 password_hash: hash_password("admin").expect("password hash"),
+                password_plain: String::new(),
                 role: UserRole::RootAdmin,
                 org_id: None,
                 tree_key_enabled: true,
@@ -7829,6 +7892,7 @@ mod tests {
                 id: "user-manager".to_owned(),
                 username: "manager".to_owned(),
                 password_hash: hash_password("Manager@123").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-root".to_owned()),
                 tree_key_enabled: false,
@@ -7882,6 +7946,7 @@ mod tests {
                 id: "user-short-password".to_owned(),
                 username: "shortpwd".to_owned(),
                 password_hash: hash_password("Temp@123").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-root".to_owned()),
                 tree_key_enabled: false,
@@ -7934,6 +7999,7 @@ mod tests {
                 id: "user-legacy-lockout".to_owned(),
                 username: "0".to_owned(),
                 password_hash: hash_password("0").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-root".to_owned()),
                 tree_key_enabled: false,
@@ -8037,6 +8103,7 @@ mod tests {
                 id: "user-manager".to_owned(),
                 username: "manager".to_owned(),
                 password_hash: hash_password("Manager@123").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-root".to_owned()),
                 tree_key_enabled: false,
@@ -8147,6 +8214,7 @@ mod tests {
                 id: "user-branch-a-manager".to_owned(),
                 username: "branch-a".to_owned(),
                 password_hash: hash_password("Branch@123").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-branch-a".to_owned()),
                 tree_key_enabled: true,
@@ -8381,6 +8449,7 @@ mod tests {
                 id: "user-manager-root".to_owned(),
                 username: "manager_root".to_owned(),
                 password_hash: hash_password("Manager@123").expect("hash"),
+                password_plain: String::new(),
                 role: UserRole::OrgManager,
                 org_id: Some("org-root".to_owned()),
                 tree_key_enabled: false,
@@ -10169,11 +10238,22 @@ fn dashboard_script() -> &'static str {
         nodeEditor.className = 'tree-node-editor';
         nodeEditor.hidden = true;
         nodeEditor.innerHTML = [
+                '<button type="button" class="tree-node-editor-btn" data-node-action="credentials" title="Xem tài khoản / mật khẩu">🔑</button>',
                 '<button type="button" class="tree-node-editor-btn" data-node-action="add" title="Thêm nút con">+</button>',
                 '<button type="button" class="tree-node-editor-btn" data-node-action="rename" title="Đổi tên">✎</button>',
                 '<button type="button" class="tree-node-editor-btn delete" data-node-action="delete" title="Xóa nút">🗑</button>',
         ].join('');
         viewport.appendChild(nodeEditor);
+
+        // Bảng nhỏ hiển thị tài khoản/mật khẩu của đơn vị đang chọn.
+        const credCard = document.createElement('div');
+        credCard.className = 'tree-cred-card';
+        credCard.hidden = true;
+        credCard.innerHTML = [
+            '<div class="tree-cred-row"><span class="tree-cred-label">Tài khoản</span><span class="tree-cred-value" data-cred-username>—</span></div>',
+            '<div class="tree-cred-row"><span class="tree-cred-label">Mật khẩu</span><span class="tree-cred-value" data-cred-password>—</span></div>',
+        ].join('');
+        viewport.appendChild(credCard);
 
     const updateHistoryButtons = () => {
         if (treeUndoButton) treeUndoButton.disabled = treeHistory.length === 0;
@@ -10276,6 +10356,7 @@ fn dashboard_script() -> &'static str {
         nodeEditor.hidden = true;
         hideUserCard();
         hideRenameCard();
+        if (credCard) credCard.hidden = true;
     };
     const currentSnapshot = () => ({
         layoutVersion: TREE_LAYOUT_VERSION,
@@ -10757,6 +10838,37 @@ fn dashboard_script() -> &'static str {
     const userNodeButton = nodeEditor.querySelector('[data-node-action="user"]');
     const renameNodeButton = nodeEditor.querySelector('[data-node-action="rename"]');
     const deleteNodeButton = nodeEditor.querySelector('[data-node-action="delete"]');
+    const credentialsButton = nodeEditor.querySelector('[data-node-action="credentials"]');
+
+    const hideCredCard = () => { if (credCard) credCard.hidden = true; };
+    const positionCredCardForNode = (nodeGroup) => {
+        if (!credCard || !nodeGroup) return;
+        const vr = viewport.getBoundingClientRect();
+        const nr = nodeGroup.getBoundingClientRect();
+        credCard.style.left = (nr.left - vr.left + nr.width / 2) + 'px';
+        credCard.style.top = (nr.bottom - vr.top + 10) + 'px';
+    };
+    credentialsButton?.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!selectedNodeGroup) return;
+        const orgId = getNodeId(selectedNodeGroup);
+        if (!orgId) return;
+        const uEl = credCard.querySelector('[data-cred-username]');
+        const pEl = credCard.querySelector('[data-cred-password]');
+        uEl.textContent = '…'; pEl.textContent = '…';
+        positionCredCardForNode(selectedNodeGroup);
+        credCard.hidden = false;
+        try {
+            const resp = await fetch(`/dashboard/tree-nodes/${encodeURIComponent(orgId)}/credentials`);
+            if (!resp.ok) throw new Error('fail');
+            const j = await resp.json();
+            uEl.textContent = j.username || '—';
+            pEl.textContent = j.password || '—';
+        } catch (_) {
+            uEl.textContent = 'Lỗi'; pEl.textContent = 'Lỗi';
+        }
+    });
 
     addNodeButton?.addEventListener('click', async (event) => {
         event.preventDefault();
@@ -10964,6 +11076,7 @@ fn dashboard_script() -> &'static str {
         if (event.target.closest('.tree-node-editor')) return;
         if (event.target.closest('.tree-user-card')) return;
         if (event.target.closest('.tree-rename-card')) return;
+        if (event.target.closest('.tree-cred-card')) return;
         if (event.target.closest('[data-tree-edit-sidebar="true"]')) return;
         if (getNodeGroup(event.target)) return;
         clearNodeSelection();
@@ -13347,55 +13460,27 @@ fn login_script() -> &'static str {
             loginCard.classList.remove('login-error-flash');
         }, 500);
     }
-    const submitButton = document.querySelector('[data-login-submit="true"]');
-    if (!submitButton) return;
 
-    const waitMessage = document.querySelector('[data-login-wait-message="true"]');
-    const unlockAt = Number.parseInt(submitButton.getAttribute('data-login-unlock-at') || '', 10);
-    if (!Number.isFinite(unlockAt)) {
-        submitButton.disabled = false;
-        return;
-    }
+    // Khóa đăng nhập: ẩn ô đăng nhập, hiện đếm ngược ( NN ) theo giây. Hết giờ
+    // thì tải lại trang để khôi phục form (máy chủ đã hết khóa).
+    const locked = document.querySelector('[data-login-locked="true"]');
+    if (!locked) return;
+    const countdownEl = locked.querySelector('[data-login-countdown="true"]');
+    const unlockAt = Number.parseInt(locked.getAttribute('data-login-unlock-at') || '', 10);
+    if (!Number.isFinite(unlockAt)) { window.location.reload(); return; }
 
-    if (unlockAt <= Date.now()) {
-        submitButton.disabled = false;
-        if (waitMessage) {
-            waitMessage.hidden = true;
-        }
-        if (loginCard) {
-            loginCard.classList.remove('login-error-flash');
-        }
-        return;
-    }
-
-    const renderCountdown = () => {
+    const tick = () => {
         const remainingMs = unlockAt - Date.now();
         if (remainingMs <= 0) {
-            submitButton.disabled = false;
-            submitButton.removeAttribute('data-login-unlock-at');
-            if (waitMessage) {
-                waitMessage.hidden = true;
-                waitMessage.textContent = '';
-            }
-            if (loginCard) {
-                loginCard.classList.remove('login-error-flash');
-            }
             window.clearInterval(timerId);
+            window.location.reload();
             return;
         }
-
-        const totalSeconds = Math.ceil(remainingMs / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-        if (waitMessage) {
-            waitMessage.hidden = false;
-            waitMessage.textContent = `${minutes}:${String(seconds).padStart(2, '0')}`;
-        }
+        const seconds = Math.ceil(remainingMs / 1000);
+        if (countdownEl) countdownEl.textContent = `( ${String(seconds).padStart(2, '0')} )`;
     };
-
-    submitButton.disabled = true;
-    renderCountdown();
-    const timerId = window.setInterval(renderCountdown, 1000);
+    tick();
+    const timerId = window.setInterval(tick, 1000);
 })();
     "#
 }

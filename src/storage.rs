@@ -253,6 +253,7 @@ fn users_to_bytes(items: &[User]) -> anyhow::Result<Vec<u8>> {
         Field::new("id", DataType::Utf8, false),
         Field::new("username", DataType::Utf8, false),
         Field::new("password_hash", DataType::Utf8, false),
+        Field::new("password_plain", DataType::Utf8, false),
         Field::new("role", DataType::Utf8, false),
         Field::new("org_id", DataType::Utf8, true),
         Field::new("tree_key_enabled", DataType::Boolean, false),
@@ -275,6 +276,12 @@ fn users_to_bytes(items: &[User]) -> anyhow::Result<Vec<u8>> {
                 items
                     .iter()
                     .map(|item| item.password_hash.clone())
+                    .collect::<Vec<_>>(),
+            )),
+            Arc::new(StringArray::from(
+                items
+                    .iter()
+                    .map(|item| item.password_plain.clone())
                     .collect::<Vec<_>>(),
             )),
             Arc::new(StringArray::from(
@@ -587,6 +594,12 @@ fn bytes_to_users(bytes: Vec<u8>) -> anyhow::Result<Vec<User>> {
     let tree_index = if has_password_plain { 6 } else { 5 };
     let active_index = if has_password_plain { 7 } else { 6 };
     let created_index = if has_password_plain { 8 } else { 7 };
+    let rows = batch.num_rows();
+    let password_plain = if has_password_plain {
+        column_string(&batch, 3)?
+    } else {
+        vec![String::new(); rows]
+    };
     let roles = column_string(&batch, role_index)?;
     let org_ids = column_opt_string(&batch, org_index)?;
     let tree_keys = column_bool(&batch, tree_index)?;
@@ -597,6 +610,7 @@ fn bytes_to_users(bytes: Vec<u8>) -> anyhow::Result<Vec<User>> {
             id: ids[index].clone(),
             username: usernames[index].clone(),
             password_hash: password_hashes[index].clone(),
+            password_plain: password_plain[index].clone(),
             role: UserRole::from_value(&roles[index]),
             org_id: org_ids[index].clone(),
             tree_key_enabled: tree_keys[index],
