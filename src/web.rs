@@ -137,11 +137,6 @@ struct DocumentViewPolicy {
     can_view_unit: bool,
 }
 
-#[derive(Clone)]
-struct MemberSection {
-    unit: Organization,
-    members: Vec<Member>,
-}
 
 #[derive(Deserialize, Default, Clone)]
 struct DocumentQuery {
@@ -486,7 +481,11 @@ fn build_router(state: AppState) -> Router {
             post(update_dashboard_tree_user_credentials),
         )
         .route("/dashboard/tree-state", post(update_dashboard_tree_state))
-        .route("/units/{id}/members/download", post(download_members_csv))
+        .route("/dashboard/tree-nodes", post(create_tree_node))
+        .route(
+            "/dashboard/tree-nodes/{id}/rename",
+            post(rename_tree_node),
+        )
         .route("/units/{unit_id}/members/{member_id}", post(update_member))
         .route("/login", post(login))
         .route("/logout", post(logout))
@@ -1687,7 +1686,6 @@ async fn unit_profile(
     };
     let document_policy = document_view_policy(&user, &unit.id, &data, Some(&session));
 
-    let _member_sections = build_member_sections(&unit, access, &data);
     let branch_source_ids = ancestor_ids(&data.organizations, &unit.id);
     // Một cache dùng chung cho toàn bộ lần tính tài liệu tổng hợp của trang này.
     // Trước đây mỗi đơn vị tổ tiên tạo cache mới rồi tính lại toàn bộ cây con
@@ -1850,65 +1848,6 @@ async fn document_manager(
         .into_string(),
     )
     .into_response()
-}
-
-async fn download_members_csv(
-    State(state): State<AppState>,
-    Path(unit_id): Path<String>,
-    jar: CookieJar,
-    Form(form): Form<MemberExportForm>,
-) -> Response {
-    let Some((user, session)) = require_session(&state, &jar).await else {
-        return Redirect::to("/").into_response();
-    };
-    if validate_csrf(&session, &form.csrf).is_err() {
-        return Redirect::to(&format!("/units/{}", unit_id)).into_response();
-    }
-    let data = state.data.read().await;
-    let Some(access) = profile_access(&user, &unit_id, &data) else {
-        return Redirect::to("/").into_response();
-    };
-    let Some(unit) = data
-        .organizations
-        .iter()
-        .find(|org| org.id == unit_id)
-        .cloned()
-    else {
-        return Redirect::to("/").into_response();
-    };
-    let sections = build_member_sections(&unit, access, &data);
-    let mut excel = String::from(
-        "<html><head><meta charset=\"utf-8\"></head><body><table border=\"1\"><tr><th>Đơn vị</th><th>Họ tên</th><th>Ngày sinh</th><th>Địa chỉ</th><th>Số điện thoại</th><th>Ngày vào tổ chức</th><th>Chức vụ</th></tr>",
-    );
-    for section in sections {
-        for member in section.members {
-            excel.push_str(&format!(
-                "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                html_escape(&section.unit.name),
-                html_escape(&member.full_name),
-                html_escape(&member.birth_date),
-                html_escape(&member.address),
-                html_escape(&member.phone),
-                html_escape(&member.joined_at),
-                html_escape(&member.title),
-            ));
-        }
-    }
-    excel.push_str("</table></body></html>");
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/vnd.ms-excel; charset=utf-8"),
-    );
-    headers.insert(
-        header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!(
-            "attachment; filename=\"{}-members.xls\"",
-            sanitize_filename(&unit_id)
-        ))
-        .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-    );
-    (StatusCode::OK, headers, excel).into_response()
 }
 
 async fn update_unit_document_preview(
@@ -2598,6 +2537,122 @@ async fn create_child_org(
         return internal_error("Không lưu được nhánh tổ chức.");
     }
     redirect_back(&form.return_to)
+}
+
+#[derive(Deserialize)]
+struct TreeNodeCreateForm {
+    csrf: String,
+    parent_id: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct TreeNodeRenameForm {
+    csrf: String,
+    name: String,
+}
+
+/// Bỏ tiền tố "Đơn vị " (nếu có) để lấy tên gốc của đơn vị.
+fn strip_unit_prefix(value: &str) -> String {
+    let trimmed = value.trim();
+    trimmed
+        .strip_prefix("Đơn vị ")
+        .or_else(|| trimmed.strip_prefix("đơn vị "))
+        .unwrap_or(trimmed)
+        .trim()
+        .to_owned()
+}
+
+/// Tạo nhanh 1 đơn vị con THẬT từ trình chỉnh sửa cây (chỉ RootAdmin).
+/// Nút mới sẽ là một đơn vị có thể bấm vào, xem tài liệu, và được cấp trên tổng hợp.
+async fn create_tree_node(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Form(form): Form<TreeNodeCreateForm>,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if user.role != UserRole::RootAdmin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if validate_csrf(&session, &form.csrf).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    let mut data = state.data.write().await;
+    let Some(parent) = data
+        .organizations
+        .iter()
+        .find(|org| org.id == form.parent_id)
+        .cloned()
+    else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    let name = {
+        let cleaned = strip_unit_prefix(&form.name);
+        if cleaned.is_empty() {
+            "mới".to_owned()
+        } else {
+            cleaned
+        }
+    };
+    let org_id = new_id("org");
+    let now = now_string();
+    let new_org = Organization {
+        id: org_id.clone(),
+        parent_id: Some(parent.id.clone()),
+        name: name.clone(),
+        tier: parent.tier + 1,
+        category: parent.category.clone(),
+        active: true,
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    data.organizations.push(new_org);
+    if persist(&state, &data).is_err() {
+        return internal_error("Không lưu được đơn vị mới.");
+    }
+    Json(serde_json::json!({
+        "id": org_id,
+        "name": name,
+        "tier": parent.tier + 1,
+    }))
+    .into_response()
+}
+
+/// Đổi tên đơn vị (đồng bộ vào dữ liệu thật, không chỉ hiển thị).
+async fn rename_tree_node(
+    State(state): State<AppState>,
+    Path(org_id): Path<String>,
+    jar: CookieJar,
+    Form(form): Form<TreeNodeRenameForm>,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if user.role != UserRole::RootAdmin {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if validate_csrf(&session, &form.csrf).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let name = strip_unit_prefix(&form.name);
+    if name.is_empty() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let mut data = state.data.write().await;
+    let Some(org) = data.organizations.iter_mut().find(|org| org.id == org_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    org.name = name.clone();
+    org.updated_at = now_string();
+    if persist(&state, &data).is_err() {
+        return internal_error("Không lưu được tên đơn vị.");
+    }
+    Json(serde_json::json!({ "id": org_id, "name": name })).into_response()
 }
 
 async fn add_member(
@@ -7173,10 +7228,6 @@ struct DownloadForm {
     access_key: String,
 }
 
-#[derive(Deserialize)]
-struct MemberExportForm {
-    csrf: String,
-}
 
 #[derive(Deserialize)]
 struct DocumentUnlockForm {
@@ -8626,7 +8677,7 @@ mod tests {
 
 fn render_org_tree_svg(organizations: &[Organization], user: &User) -> Markup {
     let min_tier = organizations.iter().map(|org| org.tier).min().unwrap_or(0);
-    let max_visible_tier = min_tier.saturating_add(2);
+    let max_visible_tier = min_tier.saturating_add(3);
     let visible_organizations: Vec<_> = organizations
         .iter()
         .filter(|org| org.tier <= max_visible_tier)
@@ -9111,7 +9162,7 @@ fn dashboard_graph_organizations(user: &User, organizations: &[Organization]) ->
         .collect();
     let mut visible_ids = HashSet::from([root_org.id.clone()]);
     let mut frontier = vec![root_org.id.clone()];
-    for _ in 0..2 {
+    for _ in 0..3 {
         let mut next_frontier = Vec::new();
         for parent_id in &frontier {
             let mut children: Vec<_> = organizations
@@ -9119,7 +9170,7 @@ fn dashboard_graph_organizations(user: &User, organizations: &[Organization]) ->
                 .filter(|org| org.parent_id.as_deref() == Some(parent_id.as_str()))
                 .collect();
             children.sort_by_key(|org| (org.tier, org_sort_key(&org.name)));
-            let child_limit = 3;
+            let child_limit = 12;
             for child in children.into_iter().take(child_limit) {
                 if visible_ids.insert(child.id.clone()) {
                     next_frontier.push(child.id.clone());
@@ -9558,54 +9609,6 @@ fn effective_shared_documents(
     effective_shared_documents_cached(organizations, documents, org_id, &mut cache)
 }
 
-fn build_member_sections(
-    unit: &Organization,
-    access: ProfileAccess,
-    data: &AppData,
-) -> Vec<MemberSection> {
-    if access == ProfileAccess::Limited {
-        return vec![MemberSection {
-            unit: unit.clone(),
-            members: limited_members_for_unit(&unit.id, data),
-        }];
-    }
-
-    let mut sections = direct_children(&data.organizations, &unit.id);
-    sections.sort_by(|left, right| org_sort_key(&left.name).cmp(&org_sort_key(&right.name)));
-    if unit.tier <= 2 {
-        sections.truncate(3);
-    }
-    if sections.is_empty() {
-        sections.push(unit.clone());
-    }
-
-    sections
-        .into_iter()
-        .map(|section_unit| {
-            let mut members: Vec<_> = data
-                .members
-                .iter()
-                .filter(|member| member.org_id == section_unit.id)
-                .cloned()
-                .collect();
-            members.sort_by(|left, right| left.full_name.cmp(&right.full_name));
-            MemberSection {
-                unit: section_unit,
-                members,
-            }
-        })
-        .collect()
-}
-
-fn limited_members_for_unit(unit_id: &str, data: &AppData) -> Vec<Member> {
-    data.members
-        .iter()
-        .filter(|member| member.org_id == unit_id && member.is_key_member())
-        .take(3)
-        .cloned()
-        .collect()
-}
-
 fn normalize_members(data: &mut AppData) -> usize {
     let org_names: HashMap<String, String> = data
         .organizations
@@ -9753,13 +9756,6 @@ fn seed_address(org: &Organization, index: usize) -> String {
     format!("Cụm {} - tuyến {}", org.name.to_uppercase(), index + 1)
 }
 
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-}
 
 fn excel_cell_to_string(cell: &Data) -> String {
     match cell {
@@ -10446,6 +10442,18 @@ fn dashboard_script() -> &'static str {
         text.textContent = unitDisplayLabel(nextName);
         hideRenameCard();
         selectNode(nodeGroup);
+        // Đồng bộ tên vào dữ liệu thật nếu là nút đơn vị thật (có data-org-id).
+        const orgId = nodeGroup.getAttribute('data-org-id');
+        if (orgId) {
+            const payload = new URLSearchParams();
+            payload.set('csrf', dashboardCsrf);
+            payload.set('name', nextName);
+            fetch(`/dashboard/tree-nodes/${encodeURIComponent(orgId)}/rename`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+            }).catch(() => {});
+        }
     };
     const openRenameCard = (nodeGroup) => {
         if (!treeRenameCard || !treeRenameInput || !nodeGroup) return;
@@ -10743,11 +10751,10 @@ fn dashboard_script() -> &'static str {
     const renameNodeButton = nodeEditor.querySelector('[data-node-action="rename"]');
     const deleteNodeButton = nodeEditor.querySelector('[data-node-action="delete"]');
 
-    addNodeButton?.addEventListener('click', (event) => {
+    addNodeButton?.addEventListener('click', async (event) => {
         event.preventDefault();
         event.stopPropagation();
         if (!selectedNodeGroup) return;
-        pushHistory();
         const parentPos = parseTranslate(selectedNodeGroup.getAttribute('transform'));
         if (!parentPos) return;
         const parentId = getNodeId(selectedNodeGroup);
@@ -10757,7 +10764,30 @@ fn dashboard_script() -> &'static str {
         const parentRadius = nodeRadiusByTier(parentTier);
         const childRadius = nodeRadiusByTier(childTier);
         syntheticNodeCount += 1;
-        const childId = `custom-${Date.now()}-${syntheticNodeCount}`;
+        const defaultName = `mới${syntheticNodeCount}`;
+
+        // Tạo đơn vị THẬT trên máy chủ -> nút mới có thể bấm vào, xem tài liệu,
+        // và được cấp trên tổng hợp giống các đơn vị c1, c2, c3.
+        let childId;
+        try {
+            const payload = new URLSearchParams();
+            payload.set('csrf', dashboardCsrf);
+            payload.set('parent_id', parentId);
+            payload.set('name', defaultName);
+            const resp = await fetch('/dashboard/tree-nodes', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+            });
+            if (!resp.ok) throw new Error('create failed');
+            const created = await resp.json();
+            childId = created.id;
+        } catch (err) {
+            window.alert('Không tạo được đơn vị mới. Vui lòng thử lại.');
+            return;
+        }
+
+        pushHistory();
         const childX = parentPos.x + (parentRadius + childRadius + 24);
         const childY = parentPos.y + (syntheticNodeCount % 2 === 0 ? 36 : -36);
 
@@ -10771,9 +10801,15 @@ fn dashboard_script() -> &'static str {
         line.setAttribute('y2', childY.toFixed(2));
         panzoom.insertBefore(line, panzoom.firstChild);
 
+        // Bọc trong <a> để nút mới bấm được như các nút thật khác.
+        const link = document.createElementNS('http://www.w3.org/2000/svg', 'a');
+        link.setAttribute('class', `tree-node-link tier-${childTier}`);
+        link.setAttribute('href', `/units/${encodeURIComponent(childId)}?return_to=%2F`);
+        link.setAttribute('data-org-id', childId);
+
         const node = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         node.setAttribute('class', `tree-node-group tier-${childTier} tree-edit-node`);
-        node.setAttribute('data-node-id', childId);
+        node.setAttribute('data-org-id', childId);
         setTranslate(node, childX, childY);
 
         const box = nodeBoxByTier(childTier);
@@ -10790,11 +10826,13 @@ fn dashboard_script() -> &'static str {
         text.setAttribute('class', 'tree-node-text');
         text.setAttribute('text-anchor', 'middle');
         text.setAttribute('dominant-baseline', 'middle');
-        text.textContent = unitDisplayLabel(`mới${syntheticNodeCount}`);
+        text.textContent = unitDisplayLabel(defaultName);
 
         node.appendChild(rect);
         node.appendChild(text);
-        panzoom.appendChild(node);
+        link.appendChild(node);
+        panzoom.appendChild(link);
+        if (typeof initialTreeNodeIds?.add === 'function') initialTreeNodeIds.add(childId);
 
         updateEdgesForNode(parentId);
         updateEdgesForNode(childId);
