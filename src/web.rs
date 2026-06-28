@@ -498,6 +498,10 @@ fn build_router(state: AppState) -> Router {
         .route("/users", post(create_user))
         .route("/documents", post(upload_document))
         .route("/documents/{id}/download", post(download_document))
+        .route(
+            "/units/{unit_id}/documents/{doc_id}/download",
+            get(download_unit_document_xlsx),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_middleware,
@@ -1462,13 +1466,13 @@ fn ensure_demo_documents(
 
     // Gắn 1 file Excel danh sách mẫu vào tài liệu của c1, c2, c3
     // (nếu các đơn vị này chưa có tài liệu riêng nào).
-    let target_orgs: Vec<String> = data
+    let target_orgs: Vec<(String, String)> = data
         .organizations
         .iter()
         .filter(|org| matches!(org.name.as_str(), "c1" | "c2" | "c3"))
-        .map(|org| org.id.clone())
+        .map(|org| (org.id.clone(), org.name.clone()))
         .collect();
-    for org_id in target_orgs {
+    for (org_id, org_name) in target_orgs {
         let already_has_own = data
             .documents
             .iter()
@@ -1485,8 +1489,8 @@ fn ensure_demo_documents(
         data.documents.push(Document {
             id: document_id,
             org_id,
-            title: "Danh sách mẫu".to_owned(),
-            file_name: "danh-sach-mau.xlsx".to_owned(),
+            title: org_name.clone(),
+            file_name: format!("{}.xlsx", org_name),
             mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 .to_owned(),
             preview_text: SAMPLE_DOC_PREVIEW.to_owned(),
@@ -2887,15 +2891,13 @@ async fn upload_document(
     let mut form_map = HashMap::new();
     let mut file_bytes = Vec::new();
     let mut file_name = String::from("tai-lieu.bin");
-    let mut mime_type = String::from("application/octet-stream");
+    // Tài liệu chuẩn là Excel .xlsx.
+    let mime_type =
+        String::from("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     while let Some(field) = multipart.next_field().await.unwrap_or(None) {
         let name = field.name().unwrap_or_default().to_owned();
         if name == "document" {
             file_name = field.file_name().unwrap_or("tai-lieu.bin").to_owned();
-            mime_type = field
-                .content_type()
-                .unwrap_or("application/octet-stream")
-                .to_owned();
             file_bytes = field.bytes().await.unwrap_or_default().to_vec();
         } else {
             form_map.insert(name, field.text().await.unwrap_or_default());
@@ -2921,7 +2923,25 @@ async fn upload_document(
     {
         return Redirect::to("/").into_response();
     }
+    let org_name = data
+        .organizations
+        .iter()
+        .find(|org| org.id == org_id)
+        .map(|org| org.name.clone())
+        .unwrap_or_default();
     drop(data);
+
+    // Chuẩn: chỉ nhận file Excel .xlsx.
+    if !file_name.to_ascii_lowercase().ends_with(".xlsx") {
+        return internal_error("Chỉ chấp nhận file Excel định dạng .xlsx.");
+    }
+    // Tên file chính của đơn vị luôn đặt theo tên đơn vị, vd c1.xlsx — để cấp
+    // trên (d1) tự nhận và tổng hợp, và để tải về đúng tên.
+    let file_name = if org_name.trim().is_empty() {
+        file_name
+    } else {
+        format!("{}.xlsx", org_name)
+    };
 
     let title = form_map
         .get("title")
@@ -3066,6 +3086,88 @@ async fn download_document(
     };
     headers.insert(header::CONTENT_DISPOSITION, value);
     (StatusCode::OK, headers, decrypted).into_response()
+}
+
+/// Dựng file .xlsx thật từ bảng xem trước (preview_text dạng TSV/CSV).
+/// Trả về bytes của workbook để tải về đúng định dạng Excel (không phải HTML
+/// đội lốt .xls gây lỗi khi mở).
+fn preview_to_xlsx_bytes(preview_text: &str) -> Option<Vec<u8>> {
+    use rust_xlsxwriter::Workbook;
+    let rows = parse_preview_rows(preview_text);
+    let mut workbook = Workbook::new();
+    let sheet = workbook.add_worksheet();
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            sheet
+                .write_string(r as u32, c as u16, cell)
+                .ok()?;
+        }
+    }
+    workbook.save_to_buffer().ok()
+}
+
+/// Tải tài liệu của đơn vị về dưới dạng .xlsx ĐÚNG như bảng đang hiển thị.
+/// Hoạt động cho cả tài liệu gốc của đơn vị lá (vd c1.xlsx) lẫn bảng tổng hợp
+/// của cấp trên (vd d1.xlsx) vì đều dựng từ nội dung bảng đang xem.
+async fn download_unit_document_xlsx(
+    State(state): State<AppState>,
+    Path((unit_id, doc_id)): Path<(String, String)>,
+    jar: CookieJar,
+) -> Response {
+    let Some((user, _session)) = require_session(&state, &jar).await else {
+        return Redirect::to("/").into_response();
+    };
+    let data = state.data.read().await;
+    if profile_access(&user, &unit_id, &data).is_none() {
+        return Redirect::to("/").into_response();
+    }
+
+    // Gộp tài liệu hiển thị của đơn vị: bản gốc + bản tổng hợp (derived).
+    let mut shared_cache: HashMap<String, Vec<Document>> = HashMap::new();
+    let mut candidates =
+        effective_shared_documents_cached(&data.organizations, &data.documents, &unit_id, &mut shared_cache);
+    candidates.extend(
+        data.documents
+            .iter()
+            .filter(|item| item.org_id == unit_id && !is_shared_document(item))
+            .cloned(),
+    );
+    let Some(document) = candidates.into_iter().find(|item| item.id == doc_id) else {
+        return internal_error("Không tìm thấy tài liệu.");
+    };
+
+    let Some(xlsx) = preview_to_xlsx_bytes(&document.preview_text) else {
+        return internal_error("Không tạo được file Excel.");
+    };
+
+    // Đảm bảo tên tải về luôn có đuôi .xlsx.
+    let base_name = document
+        .file_name
+        .trim()
+        .trim_end_matches(".xlsx")
+        .trim_end_matches(".xlxs")
+        .trim_end_matches(".xls")
+        .trim_end_matches(".csv");
+    let base_name = if base_name.is_empty() {
+        sanitize_filename(&document.title)
+    } else {
+        sanitize_filename(base_name)
+    };
+    let download_name = format!("{base_name}.xlsx");
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+    );
+    let disposition = format!("attachment; filename=\"{download_name}\"");
+    let Ok(value) = HeaderValue::from_str(&disposition) else {
+        return internal_error("Không tạo được phản hồi tải tài liệu.");
+    };
+    headers.insert(header::CONTENT_DISPOSITION, value);
+    (StatusCode::OK, headers, xlsx).into_response()
 }
 
 async fn render_dashboard(
@@ -3382,7 +3484,7 @@ fn render_dashboard_documents_overlay() -> Markup {
                 div class="dashboard-doc-panel-toolbar" {
                     label class="dashboard-doc-upload-link" title="Tải lên danh sách" {
                         "Tải lên"
-                        input type="file" class="dashboard-doc-upload-input" data-dashboard-doc-upload="true" accept=".xlsx,.xlxs,.csv,.txt" hidden;
+                        input type="file" class="dashboard-doc-upload-input" data-dashboard-doc-upload="true" accept=".xlsx" hidden;
                     }
                     button type="button" class="dashboard-doc-search-icon" data-dashboard-doc-search-toggle="true" title="Tìm đơn vị" aria-label="Tìm đơn vị" { "⌕" }
                 }
@@ -3786,7 +3888,7 @@ fn render_doc_file_manager(
                     input type="hidden" name="title" value="Tài liệu nội bộ";
                     label class="doc-file-add-label" {
                         span { "+ Thêm tệp (Excel/.xlsx)" }
-                        input type="file" name="document" accept=".xlsx,.xls,.csv" required onchange="this.form.submit()";
+                        input type="file" name="document" accept=".xlsx" required onchange="this.form.submit()";
                     }
                 }
             } @else {
@@ -3912,10 +4014,12 @@ fn render_profile_document_workspace(view: ProfileDocumentWorkspaceView<'_>) -> 
                     }
                 }
                 div class="xl-tab-actions" {
-                    form method="post" action={(format!("/units/{}/members/download", unit.id))} class="export-form" data-requires-online="true" {
-                        input type="hidden" name="csrf" value=(csrf);
-                        button type="submit" class="xl-action-btn" title="Tải Excel thành viên" { "⇩" }
-                    }
+                    a class="xl-action-btn"
+                        data-profile-doc-download-link="true"
+                        href=(format!("/units/{}/documents/{}/download", unit.id, default_doc_id))
+                        download
+                        title="Tải Excel (.xlsx) đang hiển thị"
+                        aria-label="Tải Excel (.xlsx)" { "⇩" }
                     @if can_edit && unit_is_leaf {
                         form
                             method="post"
@@ -3932,7 +4036,7 @@ fn render_profile_document_workspace(view: ProfileDocumentWorkspaceView<'_>) -> 
                             input type="hidden" name="return_to" value={(format!("/units/{}?panel=unit-documents", unit.id))};
                             input type="hidden" name="title" value="Tài liệu nội bộ" data-profile-upload-title="true";
                             label class="xl-action-btn profile-toolbar-upload-label" title="Tải tài liệu lên" aria-label="Tải tài liệu lên" {
-                                input type="file" name="document" class="profile-empty-upload-input" data-profile-upload-input="true" required;
+                                input type="file" name="document" class="profile-empty-upload-input" data-profile-upload-input="true" accept=".xlsx" required;
                                 "⇧"
                             }
                         }
@@ -8077,8 +8181,8 @@ mod tests {
                 ("year", "2026"),
                 ("return_to", "/units/org-doc-leaf?panel=unit-docs"),
             ],
-            "report.txt",
-            "text/plain",
+            "report.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             plaintext,
         );
 
@@ -8112,6 +8216,8 @@ mod tests {
             assert_eq!(data.documents.len(), 1);
             data.documents[0].clone()
         };
+        // Tên file chính của đơn vị được đặt theo tên đơn vị: "<tên>.xlsx".
+        assert_eq!(document.file_name, "Document Leaf.xlsx");
         let encrypted = std::fs::read(&document.encrypted_path).expect("encrypted file");
         let direct_plaintext = decrypt_document(
             &harness.private_key_b64,
@@ -8122,15 +8228,17 @@ mod tests {
         .expect("direct decrypt");
         assert_eq!(direct_plaintext.as_slice(), plaintext);
 
-        let download_body = format!("access_key={}", encode_form_value(&harness.private_key_b64));
+        // Tải về qua nút download: phải là file .xlsx thật (zip OOXML), tên .xlsx.
         let download_response = app
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri(format!("/documents/{}/download", document.id))
+                    .method("GET")
+                    .uri(format!(
+                        "/units/org-doc-leaf/documents/{}/download",
+                        document.id
+                    ))
                     .header(header::COOKIE, &session_cookie)
-                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
-                    .body(Body::from(download_body))
+                    .body(Body::empty())
                     .expect("request"),
             )
             .await
@@ -8150,9 +8258,16 @@ mod tests {
             headers
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|value| value.to_str().ok()),
-            Some("attachment; filename=\"Bao_cao_tong_ket-2026.bin\"")
+            Some("attachment; filename=\"Document_Leaf.xlsx\"")
         );
-        assert_eq!(bytes.as_ref(), plaintext);
+        assert_eq!(
+            headers
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        );
+        // File .xlsx hợp lệ bắt đầu bằng chữ ký ZIP "PK\x03\x04".
+        assert_eq!(&bytes[..4], b"PK\x03\x04", "tải về phải là file xlsx thật");
     }
 
     #[tokio::test]
@@ -9312,7 +9427,7 @@ fn sorted_real_shared_documents(documents: &[Document], org_id: &str) -> Vec<Doc
 }
 
 fn latest_local_list_document(documents: &[Document], org: &Organization) -> Option<Document> {
-    let expected_file_name = format!("{}.xlxs", org.name);
+    let expected_file_name = format!("{}.xlsx", org.name);
     documents
         .iter()
         .filter(|item| {
