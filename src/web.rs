@@ -1419,10 +1419,20 @@ fn ensure_demo_tree(data: &mut AppData) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Bảng danh sách mẫu (TSV) gắn vào tài liệu của c1, c2, c3.
+/// Các cột khớp với mẫu báo cáo: STT, Họ và tên, Sinh ngày, Trình độ,
+/// Cấp bậc, Mức độ hoàn thành nhiệm vụ. Xem file Excel: docs-mau/danh-sach-mau.xlsx
+const SAMPLE_DOC_PREVIEW: &str = "STT\tHọ và tên\tSinh ngày\tTrình độ\tCấp bậc\tMức độ hoàn thành nhiệm vụ\n\
+1\tNguyễn Văn An\t12/03/1990\tĐại học\tThượng úy\tHoàn thành tốt\n\
+2\tTrần Thị Bình\t25/07/1992\tCao đẳng\tTrung úy\tHoàn thành xuất sắc\n\
+3\tLê Hoàng Cường\t08/11/1988\tĐại học\tĐại úy\tHoàn thành\n\
+4\tPhạm Thị Dung\t30/01/1995\tTrung cấp\tThiếu úy\tHoàn thành tốt\n\
+5\tHoàng Văn Em\t17/09/1991\tĐại học\tThượng úy\tHoàn thành xuất sắc";
+
 fn ensure_demo_documents(
     data: &mut AppData,
-    _docs_dir: &std::path::Path,
-    _kem_public_key: &str,
+    docs_dir: &std::path::Path,
+    kem_public_key: &str,
 ) -> anyhow::Result<()> {
     let mut removed_paths = Vec::new();
     data.documents.retain(|document| {
@@ -1434,6 +1444,45 @@ fn ensure_demo_documents(
     });
     for path in removed_paths {
         let _ = fs::remove_file(path);
+    }
+
+    // Gắn 1 file Excel danh sách mẫu vào tài liệu của c1, c2, c3
+    // (nếu các đơn vị này chưa có tài liệu riêng nào).
+    let target_orgs: Vec<String> = data
+        .organizations
+        .iter()
+        .filter(|org| matches!(org.name.as_str(), "c1" | "c2" | "c3"))
+        .map(|org| org.id.clone())
+        .collect();
+    for org_id in target_orgs {
+        let already_has_own = data
+            .documents
+            .iter()
+            .any(|doc| doc.org_id == org_id && !is_shared_document(doc));
+        if already_has_own {
+            continue;
+        }
+        let document_id = new_id("doc");
+        let document_path = docs_dir.join(format!("{}.bin", document_id));
+        let (kem_ciphertext_b64, nonce_b64, encrypted) =
+            encrypt_document(kem_public_key, SAMPLE_DOC_PREVIEW.as_bytes())?;
+        fs::write(&document_path, encrypted)?;
+        let timestamp = now_string();
+        data.documents.push(Document {
+            id: document_id,
+            org_id,
+            title: "Danh sách mẫu".to_owned(),
+            file_name: "danh-sach-mau.xlsx".to_owned(),
+            mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                .to_owned(),
+            preview_text: SAMPLE_DOC_PREVIEW.to_owned(),
+            year: Utc::now().year(),
+            encrypted_path: document_path.display().to_string(),
+            kem_ciphertext_b64,
+            nonce_b64,
+            uploaded_at: timestamp.clone(),
+            updated_at: timestamp,
+        });
     }
     Ok(())
 }
@@ -3074,8 +3123,8 @@ async fn render_dashboard(
             }
             body data-panel-root="dashboard" data-initial-panel=(initial_panel) data-sync-username=(&user.username) data-tree-edit-admin=(user.role == UserRole::RootAdmin) data-tree-csrf=(&csrf) data-dashboard-org-id=(dashboard_org.as_ref().map(|org| org.id.as_str()).unwrap_or_default()) {
                 main class="shell command-shell" {
-                    img class="site-top-banner dashboard-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
                     section class="graph-stage minimal-stage" {
+                        img class="site-top-banner dashboard-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
                         div class="floating-controls" {
                             div class="top-control-row" {
                                 div class="panel-shell" data-panel="settings" {
@@ -3255,7 +3304,7 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                                                 div class="sheet-title-row" {
                                                     h1 class="profile-mode-title" { (mode_label) }
                                                     span class="profile-unit-title-code" { (&unit.name) }
-                                                    span class="doc-file-manager-hint" { "▾ quản lý tệp" }
+                                                    span class="doc-file-manager-hint" aria-label="Quản lý tệp" title="Quản lý tệp" { "▾" }
                                                 }
                                             }
                                             (render_doc_file_manager(unit_documents, unit, &session.csrf_token, can_upload_documents_here))
@@ -4379,14 +4428,17 @@ fn base_styles() -> &'static str {
             background: #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
         }
-        /* Banner ảnh nền đầu dashboard: nhỏ ~1/2, canh giữa, rõ ràng */
+        /* Banner ảnh nền đầu dashboard: dán liền vào nền trắng (không ranh giới),
+           nằm góc trên bên trái, đáy ngang chân nút Tài khoản. */
         .dashboard-top-banner {
-            width: 50%;
-            max-width: 560px;
-            margin: 2px auto 12px;
-            box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
+            width: auto;
+            height: 56px;
+            max-width: 70%;
+            margin: 14px 0 6px 24px;
+            border-radius: 0;
+            box-shadow: none;
         }
-        .minimal-stage { min-height: calc(100vh - 240px); }
+        .minimal-stage { min-height: calc(100vh - 36px); }
         .floating-controls {
             position: absolute;
             top: 18px;
@@ -5634,8 +5686,8 @@ fn base_styles() -> &'static str {
         .doc-file-manager { color: #111111; }
         .doc-file-manager-summary { cursor: pointer; list-style: none; display: inline-block; }
         .doc-file-manager-summary::-webkit-details-marker { display: none; }
-        .doc-file-manager-hint { font-size: 0.8rem; font-weight: 600; color: #8c1109; margin-left: 8px; white-space: nowrap; }
-        .doc-file-manager[open] .doc-file-manager-hint::after { content: " (đang mở)"; }
+        .doc-file-manager-hint { font-size: 1.5rem; line-height: 1; font-weight: 900; color: #111111; margin-left: 10px; white-space: nowrap; align-self: flex-end; }
+        .doc-file-manager[open] .doc-file-manager-hint { transform: rotate(180deg); }
         .doc-file-manager-panel {
             margin-top: 12px; padding: 14px 16px; max-width: 760px;
             background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 12px;
