@@ -463,7 +463,6 @@ fn build_router(state: AppState) -> Router {
         .route("/sync/bootstrap", get(sync_bootstrap))
         .route("/documents/manage", get(document_manager))
         .route("/units/{id}", get(unit_profile))
-        .route("/units/{id}/manage", get(unit_manage))
         .route("/units/{id}/documents/unlock", post(unlock_unit_documents))
         .route(
             "/units/{unit_id}/documents/{doc_id}",
@@ -617,6 +616,25 @@ pub(crate) fn emblem_svg() -> &'static str {
 }
 
 async fn serve_emblem_svg() -> Response {
+    // Ưu tiên logo PNG thật nếu người dùng đặt file vào <runtime>/branding/logo.png
+    // (vd thả vào volume Docker /data/branding/logo.png) -> không cần build lại.
+    let runtime_dir = std::env::var("APP_RUNTIME_DIR").unwrap_or_else(|_| "runtime".to_owned());
+    let logo_path = std::path::Path::new(&runtime_dir)
+        .join("branding")
+        .join("logo.png");
+    if let Ok(bytes) = std::fs::read(&logo_path) {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("image/png"),
+        );
+        // Cache ngắn để khi thay logo sẽ cập nhật sớm.
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
+        return (StatusCode::OK, headers, bytes).into_response();
+    }
     cached_asset_response("image/svg+xml; charset=utf-8", emblem_svg())
 }
 
@@ -3241,14 +3259,6 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                             }
                         }
                         div class="profile-right-tools" {
-                            @if access == ProfileAccess::Full {
-                                a href=(format!("/units/{}/manage", unit.id)) class="rail-button profile-corner-button profile-manage-button" title="Quản lý đơn vị" aria-label="Quản lý đơn vị" {
-                                    svg viewBox="0 0 24 24" aria-hidden="true" {
-                                        path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" fill="none" stroke="currentColor" stroke-width="2";
-                                        path d="M19.4 13a7.6 7.6 0 0 0 .05-2l1.6-1.2-1.6-2.8-1.9.7a7.6 7.6 0 0 0-1.7-1l-.3-2H10.4l-.3 2a7.6 7.6 0 0 0-1.7 1l-1.9-.7-1.6 2.8L6.5 11a7.6 7.6 0 0 0 0 2l-1.6 1.2 1.6 2.8 1.9-.7a7.6 7.6 0 0 0 1.7 1l.3 2h3.2l.3-2a7.6 7.6 0 0 0 1.7-1l1.9.7 1.6-2.8L19.4 13Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round";
-                                    }
-                                }
-                            }
                             a href="/" class="rail-button profile-corner-button profile-home-button" title="Về trang chủ" aria-label="Về trang chủ" {
                                 svg viewBox="0 0 24 24" aria-hidden="true" {
                                     path d="M12 3.5 3.5 10.8v9.7h6v-6h5v6h6v-9.7L12 3.5Z" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round";
@@ -3262,9 +3272,22 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                         article class="card sheet-card" {
                             div class="sheet-head" {
                                 div {
-                                    div class="sheet-title-row" {
-                                        h1 class="profile-mode-title" { (mode_label) }
-                                        span class="profile-unit-title-code" { (&unit.name) }
+                                    @if initial_panel != Some("unit-report") && can_edit_profile {
+                                        details class="doc-file-manager" {
+                                            summary class="doc-file-manager-summary" {
+                                                div class="sheet-title-row" {
+                                                    h1 class="profile-mode-title" { (mode_label) }
+                                                    span class="profile-unit-title-code" { (&unit.name) }
+                                                    span class="doc-file-manager-hint" { "▾ quản lý tệp" }
+                                                }
+                                            }
+                                            (render_doc_file_manager(unit_documents, unit, &session.csrf_token, can_upload_documents_here))
+                                        }
+                                    } @else {
+                                        div class="sheet-title-row" {
+                                            h1 class="profile-mode-title" { (mode_label) }
+                                            span class="profile-unit-title-code" { (&unit.name) }
+                                        }
                                     }
                                 }
                                 div class="sheet-actions" {
@@ -3288,325 +3311,6 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                                     unit_is_leaf: can_upload_documents_here,
                                 }))
                             }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-async fn unit_manage(
-    State(state): State<AppState>,
-    Path(unit_id): Path<String>,
-    jar: CookieJar,
-) -> Response {
-    let Some((user, session)) = require_session(&state, &jar).await else {
-        return Redirect::to("/").into_response();
-    };
-    let data = state.data.read().await;
-    let Some(unit) = data
-        .organizations
-        .iter()
-        .find(|org| org.id == unit_id)
-        .cloned()
-    else {
-        return Redirect::to("/").into_response();
-    };
-    // Chỉ đơn vị có toàn quyền (admin hoặc cấp trên của đơn vị này) mới quản lý được.
-    if profile_access(&user, &unit.id, &data) != Some(ProfileAccess::Full) {
-        return Redirect::to("/").into_response();
-    }
-
-    let mut members: Vec<_> = data
-        .members
-        .iter()
-        .filter(|member| member.org_id == unit.id)
-        .cloned()
-        .collect();
-    members.sort_by(|left, right| left.full_name.cmp(&right.full_name));
-    let mut activities: Vec<_> = data
-        .activities
-        .iter()
-        .filter(|activity| activity.org_id == unit.id)
-        .cloned()
-        .collect();
-    activities.sort_by(|left, right| {
-        right
-            .year
-            .cmp(&left.year)
-            .then_with(|| left.title.cmp(&right.title))
-    });
-    let mut children = direct_children(&data.organizations, &unit.id);
-    children.sort_by(|left, right| org_sort_key(&left.name).cmp(&org_sort_key(&right.name)));
-    let mut unit_users: Vec<_> = data
-        .users
-        .iter()
-        .filter(|item| item.org_id.as_deref() == Some(unit.id.as_str()))
-        .cloned()
-        .collect();
-    unit_users.sort_by(|left, right| left.username.cmp(&right.username));
-    let is_root_admin = user.role == UserRole::RootAdmin;
-    let csrf = session.csrf_token.clone();
-    drop(data);
-
-    Html(
-        render_unit_manage_page(UnitManageView {
-            unit: &unit,
-            members: &members,
-            activities: &activities,
-            children: &children,
-            unit_users: &unit_users,
-            is_root_admin,
-            csrf: &csrf,
-        })
-        .into_string(),
-    )
-    .into_response()
-}
-
-struct UnitManageView<'a> {
-    unit: &'a Organization,
-    members: &'a [Member],
-    activities: &'a [Activity],
-    children: &'a [Organization],
-    unit_users: &'a [User],
-    is_root_admin: bool,
-    csrf: &'a str,
-}
-
-fn activity_status_label(status: &ActivityStatus) -> &'static str {
-    match status {
-        ActivityStatus::Completed => "Đã hoàn thành",
-        ActivityStatus::Ongoing => "Đang diễn ra",
-        ActivityStatus::Planned => "Dự kiến",
-    }
-}
-
-fn render_unit_manage_page(view: UnitManageView<'_>) -> Markup {
-    let UnitManageView {
-        unit,
-        members,
-        activities,
-        children,
-        unit_users,
-        is_root_admin,
-        csrf,
-    } = view;
-    let return_to = format!("/units/{}/manage", unit.id);
-    let current_year = Utc::now().year();
-    html! {
-        (DOCTYPE)
-        html {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (format!("Quản lý đơn vị {}", unit.name)) }
-                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
-                link rel="stylesheet" href=(static_assets().base_css_url);
-            }
-            body data-panel-root="manage" {
-                main class="shell manage-shell" {
-                    header class="manage-header" {
-                        img class="manage-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="56" height="56";
-                        div class="manage-header-text" {
-                            span class="manage-over" { "QUÂN KHU 5" }
-                            h1 class="manage-title" { "Quản lý đơn vị " (&unit.name) }
-                        }
-                        div class="manage-header-actions" {
-                            a href=(format!("/units/{}", unit.id)) class="manage-link-btn" { "Xem tài liệu" }
-                            a href="/" class="manage-link-btn" { "Trang chủ" }
-                        }
-                    }
-
-                    // ── Thành viên ───────────────────────────────────────────
-                    section class="manage-card" {
-                        h2 { "Thành viên (" (members.len()) ")" }
-                        @if members.is_empty() {
-                            p class="muted" { "Chưa có thành viên." }
-                        } @else {
-                            div class="manage-table-wrap" {
-                                table class="manage-table" {
-                                    thead { tr {
-                                        th { "Họ tên" } th { "Chức vụ" } th { "Năm" }
-                                        th { "Ngày sinh" } th { "Điện thoại" } th { "Hoạt động" } th {}
-                                    } }
-                                    tbody {
-                                        @for member in members {
-                                            tr {
-                                                td { (&member.full_name) }
-                                                td { (&member.title) }
-                                                td { (member.year) }
-                                                td { (&member.birth_date) }
-                                                td { (&member.phone) }
-                                                td { (if member.active { "Đang hoạt động" } else { "Ngừng" }) }
-                                                td {
-                                                    details class="manage-edit" {
-                                                        summary { "Sửa" }
-                                                        form method="post" action=(format!("/units/{}/members/{}", unit.id, member.id)) class="manage-form manage-form-grid" {
-                                                            input type="hidden" name="csrf" value=(csrf);
-                                                            input type="hidden" name="return_to" value=(&return_to);
-                                                            label { "Họ tên" input type="text" name="full_name" value=(&member.full_name) required; }
-                                                            label { "Chức vụ" input type="text" name="title" value=(&member.title); }
-                                                            label { "Ngày sinh" input type="text" name="birth_date" value=(&member.birth_date) placeholder="1990-01-01"; }
-                                                            label { "Điện thoại" input type="text" name="phone" value=(&member.phone); }
-                                                            label { "Địa chỉ" input type="text" name="address" value=(&member.address); }
-                                                            label { "Ngày vào" input type="text" name="joined_at" value=(&member.joined_at) placeholder="2020-01-01"; }
-                                                            label class="manage-span2" { "Ghi chú" input type="text" name="notes" value=(&member.notes); }
-                                                            label class="manage-check" { input type="checkbox" name="active" checked[member.active]; " Đang hoạt động" }
-                                                            button type="submit" class="manage-submit" { "Lưu thay đổi" }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        details class="manage-add" {
-                            summary { "+ Thêm thành viên" }
-                            form method="post" action=(format!("/orgs/{}/members", unit.id)) class="manage-form manage-form-grid" {
-                                input type="hidden" name="csrf" value=(csrf);
-                                input type="hidden" name="return_to" value=(&return_to);
-                                label { "Họ tên" input type="text" name="full_name" required; }
-                                label { "Chức vụ" input type="text" name="title" placeholder="Đảng viên"; }
-                                label { "Năm" input type="number" name="year" value=(current_year); }
-                                label { "Ngày sinh" input type="text" name="birth_date" placeholder="1990-01-01"; }
-                                label { "Điện thoại" input type="text" name="phone"; }
-                                label { "Địa chỉ" input type="text" name="address"; }
-                                label { "Ngày vào" input type="text" name="joined_at" placeholder="2020-01-01"; }
-                                label class="manage-span2" { "Ghi chú" input type="text" name="notes"; }
-                                button type="submit" class="manage-submit" { "Thêm thành viên" }
-                            }
-                        }
-                    }
-
-                    // ── Hoạt động ────────────────────────────────────────────
-                    section class="manage-card" {
-                        h2 { "Hoạt động (" (activities.len()) ")" }
-                        @if activities.is_empty() {
-                            p class="muted" { "Chưa có hoạt động." }
-                        } @else {
-                            div class="manage-table-wrap" {
-                                table class="manage-table" {
-                                    thead { tr { th { "Tiêu đề" } th { "Năm" } th { "Trạng thái" } th { "Đã kiểm tra" } th {} } }
-                                    tbody {
-                                        @for activity in activities {
-                                            tr {
-                                                td { (&activity.title) }
-                                                td { (activity.year) }
-                                                td { (activity_status_label(&activity.status)) }
-                                                td { (if activity.reviewed { "✓" } else { "—" }) }
-                                                td {
-                                                    @if !activity.reviewed {
-                                                        form method="post" action=(format!("/activities/{}/review", activity.id)) class="manage-inline-form" {
-                                                            input type="hidden" name="csrf" value=(csrf);
-                                                            input type="hidden" name="return_to" value=(&return_to);
-                                                            button type="submit" class="manage-submit manage-submit-sm" { "Duyệt" }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        details class="manage-add" {
-                            summary { "+ Thêm hoạt động" }
-                            form method="post" action=(format!("/orgs/{}/activities", unit.id)) class="manage-form manage-form-grid" {
-                                input type="hidden" name="csrf" value=(csrf);
-                                input type="hidden" name="return_to" value=(&return_to);
-                                label { "Tiêu đề" input type="text" name="title" required; }
-                                label { "Năm" input type="number" name="year" value=(current_year); }
-                                label { "Trạng thái"
-                                    select name="status" {
-                                        option value="planned" { "Dự kiến" }
-                                        option value="ongoing" { "Đang diễn ra" }
-                                        option value="completed" { "Đã hoàn thành" }
-                                    }
-                                }
-                                label class="manage-span2" { "Tóm tắt" input type="text" name="summary"; }
-                                button type="submit" class="manage-submit" { "Thêm hoạt động" }
-                            }
-                        }
-                    }
-
-                    // ── Đơn vị trực thuộc ────────────────────────────────────
-                    section class="manage-card" {
-                        h2 { "Đơn vị trực thuộc (" (children.len()) ")" }
-                        @if children.is_empty() {
-                            p class="muted" { "Chưa có đơn vị trực thuộc." }
-                        } @else {
-                            ul class="manage-list" {
-                                @for child in children {
-                                    li {
-                                        a href=(format!("/units/{}/manage", child.id)) { (&child.name) }
-                                        span class="muted" { " · " (&child.category) }
-                                    }
-                                }
-                            }
-                        }
-                        details class="manage-add" {
-                            summary { "+ Tạo đơn vị trực thuộc" }
-                            form method="post" action=(format!("/orgs/{}/children", unit.id)) class="manage-form manage-form-grid" {
-                                input type="hidden" name="csrf" value=(csrf);
-                                input type="hidden" name="return_to" value=(&return_to);
-                                label { "Tên đơn vị" input type="text" name="name" required; }
-                                label { "Phân loại" input type="text" name="category" placeholder="chi bộ"; }
-                                label { "Cấp (tier)" input type="number" name="tier" value=(unit.tier + 1); }
-                                label { "Tài khoản quản lý" input type="text" name="username" required; }
-                                label { "Mật khẩu" input type="text" name="password" required; }
-                                label { "Vai trò"
-                                    select name="role" {
-                                        option value="org_manager" { "Quản lý đơn vị" }
-                                        option value="root_admin" { "Quản trị hệ thống" }
-                                    }
-                                }
-                                label { "Khóa cây (APP_TREE_KEY)" input type="password" name="admin_key" required; }
-                                label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
-                                button type="submit" class="manage-submit" { "Tạo đơn vị" }
-                            }
-                        }
-                    }
-
-                    // ── Người dùng của đơn vị ────────────────────────────────
-                    section class="manage-card" {
-                        h2 { "Tài khoản gắn với đơn vị (" (unit_users.len()) ")" }
-                        @if unit_users.is_empty() {
-                            p class="muted" { "Chưa có tài khoản nào gắn trực tiếp với đơn vị này." }
-                        } @else {
-                            ul class="manage-list" {
-                                @for account in unit_users {
-                                    li {
-                                        strong { (&account.username) }
-                                        span class="muted" { " · " (account.role.as_str()) (if account.active { "" } else { " · đã khóa" }) }
-                                    }
-                                }
-                            }
-                        }
-                        @if is_root_admin {
-                            details class="manage-add" {
-                                summary { "+ Tạo tài khoản cho đơn vị này" }
-                                form method="post" action="/users" class="manage-form manage-form-grid" {
-                                    input type="hidden" name="csrf" value=(csrf);
-                                    input type="hidden" name="return_to" value=(&return_to);
-                                    input type="hidden" name="org_id" value=(&unit.id);
-                                    label { "Tài khoản" input type="text" name="username" required; }
-                                    label { "Mật khẩu" input type="text" name="password" required; }
-                                    label { "Vai trò"
-                                        select name="role" {
-                                            option value="org_manager" { "Quản lý đơn vị" }
-                                            option value="root_admin" { "Quản trị hệ thống" }
-                                        }
-                                    }
-                                    label class="manage-check" { input type="checkbox" name="tree_key_enabled"; " Cho phép thao tác cây" }
-                                    button type="submit" class="manage-submit" { "Tạo tài khoản" }
-                                }
-                            }
-                        } @else {
-                            p class="muted manage-note" { "Chỉ quản trị hệ thống mới tạo được tài khoản mới." }
                         }
                     }
                 }
@@ -3964,6 +3668,77 @@ struct ProfileDocumentWorkspaceView<'a> {
     csrf: &'a str,
     can_edit: bool,
     unit_is_leaf: bool,
+}
+
+/// Bảng quản lý tệp tài liệu của đơn vị (mở ra khi bấm vào tiêu đề "Tài liệu ...").
+/// Cho đổi tên / xóa các tệp của chính đơn vị; tải tệp mới nếu là đơn vị lá.
+fn render_doc_file_manager(
+    documents: &[Document],
+    unit: &Organization,
+    csrf: &str,
+    can_upload: bool,
+) -> Markup {
+    let return_to = format!("/units/{}", unit.id);
+    let current_year = Utc::now().year();
+    let own_files: Vec<&Document> = documents
+        .iter()
+        .filter(|doc| {
+            doc.org_id == unit.id
+                && !is_shared_document(doc)
+                && !is_derived_shared_document(doc)
+        })
+        .collect();
+    html! {
+        div class="doc-file-manager-panel" {
+            h3 { "Quản lý tệp tài liệu" }
+            @if own_files.is_empty() {
+                p class="muted" { "Đơn vị này chưa có tệp tài liệu riêng." }
+            } @else {
+                div class="doc-file-table-wrap" {
+                    table class="doc-file-table" {
+                        thead { tr { th { "Tên tệp" } th { "Đổi tên" } th {} } }
+                        tbody {
+                            @for doc in &own_files {
+                                tr {
+                                    td class="doc-file-name" { (&doc.file_name) }
+                                    td {
+                                        form method="post" action=(format!("/units/{}/documents/{}/menu-action", unit.id, doc.id)) class="doc-file-inline-form" {
+                                            input type="hidden" name="csrf" value=(csrf);
+                                            input type="hidden" name="action" value="rename";
+                                            input type="text" name="value" value=(&doc.file_name) class="doc-file-rename-input" required;
+                                            button type="submit" class="doc-file-btn" { "Lưu" }
+                                        }
+                                    }
+                                    td {
+                                        form method="post" action=(format!("/units/{}/documents/{}/menu-action", unit.id, doc.id)) class="doc-file-inline-form" onsubmit="return confirm('Xóa tệp này?');" {
+                                            input type="hidden" name="csrf" value=(csrf);
+                                            input type="hidden" name="action" value="delete";
+                                            button type="submit" class="doc-file-btn doc-file-btn-delete" { "Xóa" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            @if can_upload {
+                form method="post" action="/documents" enctype="multipart/form-data" class="doc-file-upload-form" {
+                    input type="hidden" name="csrf" value=(csrf);
+                    input type="hidden" name="org_id" value=(&unit.id);
+                    input type="hidden" name="year" value=(current_year);
+                    input type="hidden" name="return_to" value=(&return_to);
+                    input type="hidden" name="title" value="Tài liệu nội bộ";
+                    label class="doc-file-add-label" {
+                        span { "+ Thêm tệp (Excel/.xlsx)" }
+                        input type="file" name="document" accept=".xlsx,.xls,.csv" required onchange="this.form.submit()";
+                    }
+                }
+            } @else {
+                p class="muted doc-file-note" { "Đơn vị này tổng hợp tài liệu từ cấp dưới — thêm/sửa/xóa tệp thực hiện ở đơn vị cấp dưới." }
+            }
+        }
+    }
 }
 
 fn render_profile_document_workspace(view: ProfileDocumentWorkspaceView<'_>) -> Markup {
@@ -4341,9 +4116,8 @@ fn render_login(
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
                         div class="login-brand" {
-                            img class="login-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="96" height="96";
-                            h1 class="login-brand-title" { "HỆ THỐNG NỘI BỘ" }
-                            p class="login-brand-sub" { "Quản lý tổ chức · Quân khu 5" }
+                            img class="login-emblem" src="/assets/emblem.svg" alt="Phù hiệu Quân khu 5" width="64" height="64";
+                            h1 class="login-brand-title" { "Hệ thống quản lý quần chúng Quân khu 5" }
                         }
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
                             p class="login-wait-message" data-login-wait-message="true" { (message) }
@@ -4598,43 +4372,25 @@ fn base_styles() -> &'static str {
                 #f6f7f9 !important;
             color: #111111;
         }
-        body[data-panel-root="login"] .login-shell {
-            background:
-                url("/assets/emblem.svg") center 12vh / 320px no-repeat,
-                transparent;
-        }
-        body[data-panel-root="login"] .login-shell::before {
-            content: "";
-            position: fixed;
-            inset: 0;
-            background: rgba(246, 247, 249, 0.82);
-            z-index: 0;
-        }
-        body[data-panel-root="login"] .login-shell > * { position: relative; z-index: 1; }
         .login-brand {
             display: grid;
             justify-items: center;
             gap: 6px;
-            margin-bottom: 6px;
+            margin-bottom: 10px;
             text-align: center;
         }
         .login-emblem {
-            width: 96px;
-            height: 96px;
-            filter: drop-shadow(0 6px 14px rgba(140, 17, 9, 0.28));
+            width: 64px;
+            height: 64px;
+            filter: drop-shadow(0 4px 10px rgba(140, 17, 9, 0.25));
         }
         .login-brand-title {
-            margin: 6px 0 0;
-            font-size: 18px;
+            margin: 8px 0 0;
+            font-size: 17px;
             font-weight: 800;
-            letter-spacing: 2px;
+            line-height: 1.3;
             color: #8c1109;
-        }
-        .login-brand-sub {
-            margin: 0;
-            font-size: 12.5px;
-            color: #6b7280;
-            letter-spacing: 0.5px;
+            max-width: 300px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -4654,7 +4410,7 @@ fn base_styles() -> &'static str {
             background:
                 radial-gradient(circle at 12% 8%, rgba(209, 31, 31, 0.05), transparent 30%),
                 radial-gradient(circle at 88% 92%, rgba(205, 162, 58, 0.07), transparent 32%),
-                url("/assets/emblem.svg") right -60px bottom -60px / 360px no-repeat,
+                url("/assets/emblem.svg") center center / 420px no-repeat,
                 #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
         }
@@ -5091,9 +4847,11 @@ fn base_styles() -> &'static str {
         }
         .tree-edit-sidebar {
             position: fixed;
-            top: 134px;
-            right: 150px;
-            transform: none;
+            top: auto;
+            bottom: 22px;
+            left: 50%;
+            right: auto;
+            transform: translateX(-50%);
             display: flex;
             align-items: center;
             gap: 6px;
@@ -5675,8 +5433,10 @@ fn base_styles() -> &'static str {
         .command-shell .graph-grid { background-image: linear-gradient(rgba(17,24,39,0.055) 1px, transparent 1px), linear-gradient(90deg, rgba(17,24,39,0.055) 1px, transparent 1px); }
         .command-shell .graph-aura { background: transparent; }
         .command-shell .tree-node-editor { background: #ffffff; border-color: #111111; box-shadow: 0 12px 26px rgba(17,24,39,0.18); }
-        .command-shell .tree-node-editor-btn { background: #111111; border-color: #111111; color: #ffffff; }
-        .command-shell .tree-node-editor-btn:hover { background: #ffffff; color: #111111; }
+        .command-shell .tree-node-editor-btn { background: #ffffff; border-color: #111111; color: #111111; }
+        .command-shell .tree-node-editor-btn svg { fill: #111111; }
+        .command-shell .tree-node-editor-btn:hover { background: #111111; color: #ffffff; }
+        .command-shell .tree-node-editor-btn:hover svg { fill: #ffffff; }
         .command-shell .tree-edge { stroke: rgba(17,24,39,0.22); }
         .command-shell .tree-node, .command-shell .tier-0 .tree-node, .command-shell .tier-1 .tree-node, .command-shell .tier-2 .tree-node, .command-shell .tier-3 .tree-node { fill: #ffffff; stroke: #111111; stroke-width: 2.2; }
         .command-shell .generation-0 .tree-node { stroke: #dc2626; }
@@ -5940,6 +5700,31 @@ fn base_styles() -> &'static str {
             color: #111111 !important;
         }
         .profile-shell .profile-unit-title-code { color: #111111; font-size: 1.55rem; line-height: 1; font-weight: 800; text-transform: none; padding-top: 0; }
+        .doc-file-manager { color: #111111; }
+        .doc-file-manager-summary { cursor: pointer; list-style: none; display: inline-block; }
+        .doc-file-manager-summary::-webkit-details-marker { display: none; }
+        .doc-file-manager-hint { font-size: 0.8rem; font-weight: 600; color: #8c1109; margin-left: 8px; white-space: nowrap; }
+        .doc-file-manager[open] .doc-file-manager-hint::after { content: " (đang mở)"; }
+        .doc-file-manager-panel {
+            margin-top: 12px; padding: 14px 16px; max-width: 760px;
+            background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 12px;
+        }
+        .doc-file-manager-panel h3 { margin: 0 0 10px; font-size: 1rem; color: #111111; }
+        .doc-file-table-wrap { overflow-x: auto; }
+        .doc-file-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+        .doc-file-table th, .doc-file-table td { text-align: left; padding: 7px 8px; border-bottom: 1px solid #eef0f3; vertical-align: middle; }
+        .doc-file-table th { color: #6b7280; font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.4px; }
+        .doc-file-name { font-weight: 600; }
+        .doc-file-inline-form { display: flex; gap: 6px; margin: 0; align-items: center; }
+        .doc-file-rename-input { border: 1.5px solid #cbd2dc; border-radius: 6px; padding: 5px 8px; font-size: 0.86rem; min-width: 150px; }
+        .doc-file-btn { background: #ffffff; border: 1.5px solid #111111; color: #111111; border-radius: 6px; padding: 5px 12px; font-weight: 600; font-size: 0.82rem; cursor: pointer; }
+        .doc-file-btn:hover { background: #111111; color: #ffffff; }
+        .doc-file-btn-delete { border-color: #b3160f; color: #b3160f; }
+        .doc-file-btn-delete:hover { background: #b3160f; color: #ffffff; }
+        .doc-file-upload-form { margin-top: 12px; }
+        .doc-file-add-label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 700; color: #8c1109; border: 1.5px dashed #8c1109; border-radius: 8px; padding: 8px 14px; font-size: 0.86rem; }
+        .doc-file-add-label input[type=file] { display: none; }
+        .doc-file-note { margin-top: 10px; font-size: 0.82rem; }
         .profile-shell .profile-header-action-button,
         .profile-shell .title-doc-button {
             color: #11315f !important;
