@@ -4179,6 +4179,7 @@ fn render_login(
             }
             body data-panel-root="login" {
                 img class="site-top-banner" src=(static_assets().site_bg_url) alt="Quân khu 5";
+                h1 class="login-system-title" { "HỆ THỐNG QUẢN LÝ DANH SÁCH QUẦN CHÚNG" }
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
@@ -4445,9 +4446,21 @@ fn base_styles() -> &'static str {
             max-width: 620px;
             margin: 30px auto 0;
         }
+        .login-system-title {
+            margin: 18px auto 0;
+            max-width: 760px;
+            text-align: center;
+            font-size: 1.7rem;
+            line-height: 1.3;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            color: #8c1109;
+            text-transform: uppercase;
+            padding: 0 16px;
+        }
         body[data-panel-root="login"] .login-shell {
             min-height: auto;
-            padding-top: 72px;
+            padding-top: 120px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -8697,16 +8710,10 @@ fn build_tree_layout(organizations: &[Organization]) -> Option<TreeLayout> {
         current_level = next_level;
     }
 
-    let mut visual_rows: Vec<Vec<Organization>> = Vec::new();
-    for level in levels {
-        if level.len() > 12 {
-            let split_at = level.len().div_ceil(2);
-            visual_rows.push(level[..split_at].to_vec());
-            visual_rows.push(level[split_at..].to_vec());
-        } else {
-            visual_rows.push(level);
-        }
-    }
+    // Mỗi cấp đơn vị nằm trên ĐÚNG MỘT hàng (không tách dòng). Trong một cấp,
+    // các đơn vị đã được xếp theo thứ tự cha -> con liền nhau nên cây gọn, các
+    // đường nối không chồng chéo. Khi nhiều đơn vị, khung nhìn sẽ tự thu nhỏ vừa.
+    let visual_rows: Vec<Vec<Organization>> = levels;
 
     let max_width = visual_rows
         .iter()
