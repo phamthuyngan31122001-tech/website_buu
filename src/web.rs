@@ -483,6 +483,10 @@ fn build_router(state: AppState) -> Router {
             "/dashboard/tree-nodes/{id}/rename",
             post(rename_tree_node),
         )
+        .route(
+            "/dashboard/tree-nodes/{id}/delete",
+            post(delete_tree_node),
+        )
         .route("/units/{unit_id}/members/{member_id}", post(update_member))
         .route("/login", post(login))
         .route("/logout", post(logout))
@@ -2342,6 +2346,11 @@ struct TreeNodeRenameForm {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct TreeNodeDeleteForm {
+    csrf: String,
+}
+
 /// Bỏ tiền tố "Đơn vị " (nếu có) để lấy tên gốc của đơn vị.
 fn strip_unit_prefix(value: &str) -> String {
     let trimmed = value.trim();
@@ -2443,6 +2452,57 @@ async fn rename_tree_node(
         return internal_error("Không lưu được tên đơn vị.");
     }
     Json(serde_json::json!({ "id": org_id, "name": name })).into_response()
+}
+
+/// Xóa THẬT một đơn vị và toàn bộ nhánh con của nó (đơn vị, người dùng, tài
+/// liệu kèm theo). Chỉ RootAdmin hoặc tài khoản cấp trên quản lý nhánh đó.
+async fn delete_tree_node(
+    State(state): State<AppState>,
+    Path(org_id): Path<String>,
+    jar: CookieJar,
+    Form(form): Form<TreeNodeDeleteForm>,
+) -> Response {
+    let Some((user, session)) = require_session(&state, &jar).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    if validate_csrf(&session, &form.csrf).is_err() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let mut data = state.data.write().await;
+    if !can_manage_org(&user, &org_id, &data) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // Không cho xóa đơn vị gốc (tier 0).
+    if data
+        .organizations
+        .iter()
+        .any(|org| org.id == org_id && org.tier == 0)
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    // Gom đơn vị này + toàn bộ con cháu.
+    let mut to_remove = descendant_ids(&data.organizations, &org_id);
+    to_remove.insert(org_id.clone());
+
+    // Xóa file tài liệu kèm theo trên đĩa.
+    for document in data
+        .documents
+        .iter()
+        .filter(|doc| to_remove.contains(&doc.org_id))
+    {
+        let _ = fs::remove_file(&document.encrypted_path);
+    }
+    data.documents.retain(|doc| !to_remove.contains(&doc.org_id));
+    data.members.retain(|m| !to_remove.contains(&m.org_id));
+    data.activities.retain(|a| !to_remove.contains(&a.org_id));
+    data.users
+        .retain(|u| u.org_id.as_deref().map(|id| !to_remove.contains(id)).unwrap_or(true));
+    data.organizations.retain(|org| !to_remove.contains(&org.id));
+
+    if persist(&state, &data).is_err() {
+        return internal_error("Không xóa được đơn vị.");
+    }
+    Json(serde_json::json!({ "removed": to_remove.len() })).into_response()
 }
 
 async fn add_member(
@@ -8468,7 +8528,7 @@ mod tests {
 
 fn render_org_tree_svg(organizations: &[Organization], user: &User) -> Markup {
     let min_tier = organizations.iter().map(|org| org.tier).min().unwrap_or(0);
-    let max_visible_tier = min_tier.saturating_add(3);
+    let max_visible_tier = min_tier.saturating_add(2);
     let visible_organizations: Vec<_> = organizations
         .iter()
         .filter(|org| org.tier <= max_visible_tier)
@@ -8953,7 +9013,8 @@ fn dashboard_graph_organizations(user: &User, organizations: &[Organization]) ->
         .collect();
     let mut visible_ids = HashSet::from([root_org.id.clone()]);
     let mut frontier = vec![root_org.id.clone()];
-    for _ in 0..3 {
+    // Hiển thị tối đa 2 cấp đơn vị dưới gốc đang xem (vd f -> e -> d).
+    for _ in 0..2 {
         let mut next_frontier = Vec::new();
         for parent_id in &frontier {
             let mut children: Vec<_> = organizations
@@ -10323,6 +10384,7 @@ fn dashboard_script() -> &'static str {
         });
     };
     const setEditMode = (enabled) => {
+        const wasEditing = editMode;
         editMode = !!enabled;
         viewport.classList.toggle('edit-mode', editMode);
         if (treeSidebar) treeSidebar.hidden = !editMode;
@@ -10343,6 +10405,11 @@ fn dashboard_script() -> &'static str {
         }
         if (!editMode) {
             clearNodeSelection();
+        }
+        // Kết thúc phiên chỉnh sửa (bấm nút lần 2 / đóng) -> tự động lưu cấu hình.
+        if (wasEditing && !editMode) {
+            persistUserDraft();
+            saveTreeState();
         }
     };
 
@@ -10668,6 +10735,17 @@ fn dashboard_script() -> &'static str {
         const container = selectedNodeGroup.closest('a.tree-node-link') || selectedNodeGroup;
         container.remove();
         clearNodeSelection();
+        // Xóa THẬT đơn vị trên máy chủ (cả nhánh con) nếu là đơn vị thật.
+        const orgId = nodeId;
+        if (orgId && !String(orgId).startsWith('custom-') && !String(orgId).startsWith('synthetic-')) {
+            const payload = new URLSearchParams();
+            payload.set('csrf', dashboardCsrf);
+            fetch(`/dashboard/tree-nodes/${encodeURIComponent(orgId)}/delete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: payload.toString(),
+            }).catch(() => {});
+        }
     });
 
     treeUserUsernameInput?.addEventListener('input', persistUserDraft);
