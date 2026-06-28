@@ -519,6 +519,10 @@ pub(crate) struct StaticAssets {
     pub profile_js_url: String,
     pub sync_js_url: String,
     pub login_js_url: String,
+    // Ảnh có gắn "?v=<hash nội dung>" để khi đổi ảnh là URL đổi theo,
+    // trình duyệt tự tải bản mới (không bị kẹt ảnh cũ trong cache).
+    pub site_bg_url: String,
+    pub emblem_url: String,
     base_css_filename: String,
     dashboard_js_filename: String,
     profile_js_filename: String,
@@ -527,7 +531,11 @@ pub(crate) struct StaticAssets {
 }
 
 fn short_hash(body: &str) -> String {
-    let digest = Sha256::digest(body.as_bytes());
+    short_hash_bytes(body.as_bytes())
+}
+
+fn short_hash_bytes(body: &[u8]) -> String {
+    let digest = Sha256::digest(body);
     let mut out = String::with_capacity(16);
     for byte in &digest[..8] {
         use std::fmt::Write as _;
@@ -549,12 +557,16 @@ pub(crate) fn static_assets() -> &'static StaticAssets {
         let profile_js_filename = format!("profile.{}.js", short_hash(profile_js));
         let sync_js_filename = format!("sync.{}.js", short_hash(sync_js));
         let login_js_filename = format!("login.{}.js", short_hash(login_js));
+        let site_bg_hash = short_hash_bytes(include_bytes!("../AnhNen.png"));
+        let emblem_hash = short_hash_bytes(include_bytes!("../logo.png"));
         StaticAssets {
             base_css_url: format!("/assets/{}", base_css_filename),
             dashboard_js_url: format!("/assets/{}", dashboard_js_filename),
             profile_js_url: format!("/assets/{}", profile_js_filename),
             sync_js_url: format!("/assets/{}", sync_js_filename),
             login_js_url: format!("/assets/{}", login_js_filename),
+            site_bg_url: format!("/assets/site-bg.png?v={}", site_bg_hash),
+            emblem_url: format!("/assets/emblem.svg?v={}", emblem_hash),
             base_css_filename,
             dashboard_js_filename,
             profile_js_filename,
@@ -585,12 +597,13 @@ async fn serve_emblem_svg() -> Response {
         return (StatusCode::OK, headers, bytes).into_response();
     }
     // Mặc định: logo.png chính thức nhúng sẵn trong binary.
+    // URL có "?v=<hash>" nên có thể cache lâu, đổi ảnh là URL đổi -> tự tải lại.
     static LOGO_PNG: &[u8] = include_bytes!("../logo.png");
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
     (StatusCode::OK, headers, LOGO_PNG).into_response()
 }
@@ -611,12 +624,13 @@ async fn serve_site_background() -> Response {
         );
         return (StatusCode::OK, headers, bytes).into_response();
     }
+    // URL có "?v=<hash>" nên cache lâu an toàn, đổi ảnh là URL đổi -> tự tải lại.
     static BG_PNG: &[u8] = include_bytes!("../AnhNen.png");
     let mut headers = HeaderMap::new();
     headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=86400"),
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
     );
     (StatusCode::OK, headers, BG_PNG).into_response()
 }
@@ -1671,11 +1685,22 @@ async fn unit_profile(
 
     let _member_sections = build_member_sections(&unit, access, &data);
     let branch_source_ids = ancestor_ids(&data.organizations, &unit.id);
+    // Một cache dùng chung cho toàn bộ lần tính tài liệu tổng hợp của trang này.
+    // Trước đây mỗi đơn vị tổ tiên tạo cache mới rồi tính lại toàn bộ cây con
+    // (O(số tổ tiên × cây con)) -> rất chậm với cây sâu. Giờ chia sẻ 1 cache.
+    let mut shared_doc_cache: HashMap<String, Vec<Document>> = HashMap::new();
     let mut branch_documents: Vec<_> = data
         .organizations
         .iter()
         .filter(|org| branch_source_ids.contains(&org.id))
-        .flat_map(|org| effective_shared_documents(&data.organizations, &data.documents, &org.id))
+        .flat_map(|org| {
+            effective_shared_documents_cached(
+                &data.organizations,
+                &data.documents,
+                &org.id,
+                &mut shared_doc_cache,
+            )
+        })
         .collect();
     // Keep "Sổ tổng hợp nhân sự" at top of branch document list
     branch_documents.sort_by_key(|doc| {
@@ -1696,8 +1721,12 @@ async fn unit_profile(
             .cmp(&right.uploaded_at)
             .then_with(|| left.file_name.cmp(&right.file_name))
     });
-    let mut unit_documents =
-        effective_shared_documents(&data.organizations, &data.documents, &unit.id);
+    let mut unit_documents = effective_shared_documents_cached(
+        &data.organizations,
+        &data.documents,
+        &unit.id,
+        &mut shared_doc_cache,
+    );
     unit_documents.extend(unit_local_documents);
     let visible_branch_documents = if document_policy.can_view_branch {
         branch_documents.clone()
@@ -3116,7 +3145,7 @@ async fn render_dashboard(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Website nội bộ tổ chức" }
-                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="icon" type="image/svg+xml" href=(static_assets().emblem_url);
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -3124,7 +3153,7 @@ async fn render_dashboard(
             body data-panel-root="dashboard" data-initial-panel=(initial_panel) data-sync-username=(&user.username) data-tree-edit-admin=(user.role == UserRole::RootAdmin) data-tree-csrf=(&csrf) data-dashboard-org-id=(dashboard_org.as_ref().map(|org| org.id.as_str()).unwrap_or_default()) {
                 main class="shell command-shell" {
                     section class="graph-stage minimal-stage" {
-                        img class="site-top-banner dashboard-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
+                        img class="site-top-banner dashboard-top-banner" src=(static_assets().site_bg_url) alt="Quân khu 5";
                         div class="floating-controls" {
                             div class="top-control-row" {
                                 div class="panel-shell" data-panel="settings" {
@@ -3266,7 +3295,7 @@ async fn render_unit_profile_page(view: UnitProfileView<'_>) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (format!("Đơn vị {}", unit.name)) }
-                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="icon" type="image/svg+xml" href=(static_assets().emblem_url);
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().profile_js_url) defer {}
@@ -4066,7 +4095,7 @@ fn render_document_manager_page(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Quản lý tài liệu" }
-                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="icon" type="image/svg+xml" href=(static_assets().emblem_url);
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().dashboard_js_url) defer {}
@@ -4133,13 +4162,13 @@ fn render_login(
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { "Đăng nhập hệ thống nội bộ" }
-                link rel="icon" type="image/svg+xml" href="/assets/emblem.svg";
+                link rel="icon" type="image/svg+xml" href=(static_assets().emblem_url);
                 link rel="stylesheet" href=(static_assets().base_css_url);
                 script src=(static_assets().sync_js_url) defer {}
                 script src=(static_assets().login_js_url) defer {}
             }
             body data-panel-root="login" {
-                img class="site-top-banner" src="/assets/site-bg.png" alt="Quân khu 5";
+                img class="site-top-banner" src=(static_assets().site_bg_url) alt="Quân khu 5";
                 main class="login-shell" {
                     article class={(if show_error_flash { "card login-card compact-login login-error-flash" } else { "card login-card compact-login" })} {
                         @if let Some(message) = wait_message.as_deref().or(status_message) {
@@ -8445,6 +8474,39 @@ mod tests {
         assert_eq!(rows[3][0], "3");
         assert!(!aggregated.contains("DANH SACH"), "tựa đề con phải bị loại bỏ");
     }
+
+    #[test]
+    fn aggregate_dedupes_header_even_when_not_keyword_matched() {
+        // Tiêu đề dùng tên cột lạ (không nằm trong từ khóa) nên không bị dò ra,
+        // nhưng vẫn phải chỉ còn 1 dòng tên cột ở trên cùng.
+        let make_doc = |id: &str, org: &str, val: &str| super::Document {
+            id: id.to_owned(),
+            org_id: org.to_owned(),
+            title: org.to_owned(),
+            file_name: format!("{org}.xlsx"),
+            mime_type: "text/plain".to_owned(),
+            preview_text: format!("Ma so\tGhi chu\n{val}\tOK"),
+            year: 2026,
+            encrypted_path: String::new(),
+            kem_ciphertext_b64: String::new(),
+            nonce_b64: String::new(),
+            uploaded_at: "2026-01-01".to_owned(),
+            updated_at: "2026-01-01".to_owned(),
+        };
+        let slot_docs = vec![
+            ("c1".to_owned(), make_doc("d1", "c1", "A1")),
+            ("c2".to_owned(), make_doc("d2", "c2", "B2")),
+        ];
+        let aggregated = super::aggregate_shared_slot_preview(&slot_docs, "Theo đơn vị");
+        let rows = super::parse_preview_rows(&aggregated);
+        assert_eq!(rows.len(), 3, "1 tên cột + 2 dữ liệu: {rows:?}");
+        assert_eq!(rows[0], vec!["Ma so".to_owned(), "Ghi chu".to_owned()]);
+        assert_eq!(
+            rows.iter().filter(|r| r[0] == "Ma so").count(),
+            1,
+            "chỉ 1 dòng tên cột: {rows:?}"
+        );
+    }
 }
 
 fn render_org_tree_svg(organizations: &[Organization], user: &User) -> Markup {
@@ -9147,34 +9209,50 @@ fn aggregate_shared_slot_preview(slot_docs: &[(String, Document)], method: &str)
     // Gom dữ liệu từ nhiều đơn vị con: chỉ giữ DUY NHẤT một dòng tiêu đề ở trên cùng.
     // Mỗi tài liệu con có thể có dòng tựa đề phía trên dòng tiêu đề cột; ta dò đúng
     // dòng tiêu đề theo nội dung, bỏ phần tựa đề và mọi dòng tiêu đề bị lặp lại.
+    // Chuẩn hóa 1 dòng để so khớp tiêu đề (không phân biệt hoa/thường, khoảng trắng).
+    let row_signature = |row: &[String]| -> String {
+        row.iter()
+            .map(|cell| normalize_header_key(cell))
+            .collect::<Vec<_>>()
+            .join("\u{1}")
+    };
+
+    // Bước 1: chọn DUY NHẤT một dòng tiêu đề (tên các cột) cho cả bảng tổng hợp.
+    // Ưu tiên dòng dò được theo từ khóa; nếu không có thì lấy dòng đầu tiên
+    // (sau khi bỏ dòng tựa đề rỗng) của tài liệu con đầu tiên.
     let mut header: Option<Vec<String>> = None;
+    for (_, document) in slot_docs {
+        let rows = parse_preview_rows(&document.preview_text);
+        if let Some(found) = rows.iter().find(|row| looks_like_header_row(row)) {
+            header = Some(found.clone());
+            break;
+        }
+        if header.is_none() {
+            header = rows.into_iter().next();
+        }
+    }
+    let header_sig = header.as_deref().map(row_signature);
+
+    // Bước 2: gộp phần thân của mọi tài liệu con. Với mỗi tài liệu con:
+    //  - bỏ phần tựa đề (mọi dòng đứng trước dòng tiêu đề cột),
+    //  - bỏ chính dòng tiêu đề và mọi dòng trùng với tiêu đề (kể cả tiêu đề
+    //    không khớp từ khóa, so theo nội dung) -> d1 chỉ còn 1 dòng tên cột.
     let mut body_rows: Vec<Vec<String>> = Vec::new();
     for (_, document) in slot_docs {
         let rows = parse_preview_rows(&document.preview_text);
-        if rows.is_empty() {
-            continue;
-        }
-        match rows.iter().position(|row| looks_like_header_row(row)) {
-            Some(header_idx) => {
-                if header.is_none() {
-                    header = Some(rows[header_idx].clone());
-                }
-                for (index, row) in rows.into_iter().enumerate() {
-                    // Bỏ phần tựa đề (đứng trước tiêu đề), bỏ chính dòng tiêu đề,
-                    // và bỏ mọi dòng tiêu đề lặp lại nằm trong phần thân.
-                    if index <= header_idx || looks_like_header_row(&row) {
-                        continue;
-                    }
-                    body_rows.push(row);
-                }
+        let header_idx = rows.iter().position(|row| looks_like_header_row(row));
+        for (index, row) in rows.into_iter().enumerate() {
+            match header_idx {
+                // Dò được tiêu đề: bỏ tựa đề + dòng tiêu đề (index <= header_idx).
+                Some(idx) if index <= idx => continue,
+                // Không dò được tiêu đề: coi dòng đầu là tiêu đề -> bỏ dòng đầu.
+                None if index == 0 => continue,
+                _ => {}
             }
-            None => {
-                // Không dò được tiêu đề: coi dòng đầu là tiêu đề (giữ hành vi cũ).
-                if header.is_none() {
-                    header = rows.first().cloned();
-                }
-                body_rows.extend(rows.into_iter().skip(1));
+            if Some(&row_signature(&row)) == header_sig.as_ref() || looks_like_header_row(&row) {
+                continue;
             }
+            body_rows.push(row);
         }
     }
 
@@ -9355,6 +9433,7 @@ fn effective_shared_documents_cached(
     result
 }
 
+#[cfg(test)]
 fn effective_shared_documents(
     organizations: &[Organization],
     documents: &[Document],
