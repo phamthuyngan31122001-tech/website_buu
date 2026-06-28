@@ -4343,17 +4343,23 @@ fn base_styles() -> &'static str {
             background: #f6f7f9 !important;
             color: #111111;
         }
-        /* Banner ảnh nền trên cùng: rộng bằng trang, vừa vặn, không tràn */
+        /* Banner ảnh nền trên cùng: bo góc, canh giữa, vừa vặn */
         .site-top-banner {
             display: block;
-            width: 100%;
-            max-width: 100%;
             height: auto;
-            object-fit: contain;
+            max-width: 100%;
+            margin: 0 auto;
+            border-radius: 16px;
+        }
+        /* Login: banner nhỏ ~2/3, canh giữa */
+        body[data-panel-root="login"] .site-top-banner {
+            width: 66%;
+            max-width: 620px;
+            margin: 30px auto 0;
         }
         body[data-panel-root="login"] .login-shell {
             min-height: auto;
-            padding-top: 40px;
+            padding-top: 28px;
         }
         .card, .sub-card {
             background: var(--paper);
@@ -4373,13 +4379,14 @@ fn base_styles() -> &'static str {
             background: #ffffff;
             box-shadow: 0 14px 30px rgba(17, 24, 39, 0.08);
         }
-        /* Banner ảnh nền đầu trang dashboard: rõ ràng, rộng bằng trang */
+        /* Banner ảnh nền đầu dashboard: nhỏ ~1/2, canh giữa, rõ ràng */
         .dashboard-top-banner {
-            border-radius: 16px;
-            margin-bottom: 12px;
+            width: 50%;
+            max-width: 560px;
+            margin: 2px auto 12px;
             box-shadow: 0 6px 16px rgba(17, 24, 39, 0.08);
         }
-        .minimal-stage { min-height: calc(100vh - 320px); }
+        .minimal-stage { min-height: calc(100vh - 240px); }
         .floating-controls {
             position: absolute;
             top: 18px;
