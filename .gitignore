@@ -10,3 +10,4 @@
 # Bí mật triển khai - KHÔNG commit
 .env
 deploy/docker/.env
+node_modules/
