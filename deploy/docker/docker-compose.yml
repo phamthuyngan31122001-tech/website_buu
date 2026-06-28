@@ -44,8 +44,9 @@ services:
     restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # Chỉ theo dõi container có nhãn enable=true (app). Kiểm tra mỗi 60s, dọn image cũ.
-    command: --interval 60 --cleanup --label-enable
+    # Theo dõi mọi container trong stack, kiểm tra mỗi 30s, dọn image cũ.
+    # (Bỏ --label-enable để chắc chắn cập nhật được container app.)
+    command: --interval 30 --cleanup
 
 volumes:
   buu_data:
