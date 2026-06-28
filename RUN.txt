@@ -35,6 +35,17 @@ Chạy (Terminal 2):
 ✓ URL này KHÔNG đổi dù tunnel rớt và tự kết nối lại -> ổn định lâu dài.
 
 ────────────────────────────────────────────────────────────────
+⭐ NHANH NHẤT - Bấm 1 cái chạy cả Server + Tunnel (Cloudflare cố định):
+  Nhấp đúp start-all.bat  (hoặc chạy: .\start-all.bat)
+  -> Mở 2 cửa sổ: server + cloudflared. Link: https://qk5.blacknull.net
+  (Yêu cầu: đã có cloudflared.exe ở thư mục gốc + đã tạo tunnel qk5 trước đó.)
+
+  Mạng chặn QUIC/UDP nên BẮT BUỘC chạy cloudflared với --protocol http2.
+  Named tunnel (qk5.blacknull.net) chạy 4 kết nối HA -> không gián đoạn.
+  Chạy thủ công tunnel:
+    .\cloudflared.exe tunnel run --protocol http2 --url http://127.0.0.1:18088 qk5
+
+────────────────────────────────────────────────────────────────
 (Cách cũ) localhost.run — KHÔNG khuyến nghị nếu cần link ổn định:
   powershell -ExecutionPolicy Bypass -File scripts\tunnel.ps1
 ⚠️  Bản miễn phí localhost.run cấp URL *.lhr.life NGẪU NHIÊN mới mỗi lần
