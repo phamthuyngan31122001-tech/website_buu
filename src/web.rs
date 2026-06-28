@@ -436,6 +436,7 @@ fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/service-worker.js", get(service_worker_asset))
         .route("/assets/emblem.svg", get(serve_emblem_svg))
+        .route("/assets/site-bg.png", get(serve_site_background))
         .route("/favicon.ico", get(serve_emblem_svg))
         .route("/favicon.svg", get(serve_emblem_svg))
         .route(
@@ -636,6 +637,26 @@ async fn serve_emblem_svg() -> Response {
         return (StatusCode::OK, headers, bytes).into_response();
     }
     cached_asset_response("image/svg+xml; charset=utf-8", emblem_svg())
+}
+
+/// Phục vụ ảnh nền nếu người dùng đặt <runtime>/branding/background.png
+/// (thả vào volume /data/branding/background.png). Không có thì trả 404 (giao
+/// diện vẫn dùng nền gradient mặc định).
+async fn serve_site_background() -> Response {
+    let runtime_dir = std::env::var("APP_RUNTIME_DIR").unwrap_or_else(|_| "runtime".to_owned());
+    let bg_path = std::path::Path::new(&runtime_dir)
+        .join("branding")
+        .join("background.png");
+    if let Ok(bytes) = std::fs::read(&bg_path) {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+        headers.insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=300"),
+        );
+        return (StatusCode::OK, headers, bytes).into_response();
+    }
+    StatusCode::NOT_FOUND.into_response()
 }
 
 fn cached_asset_response(content_type: &'static str, body: &'static str) -> Response {
@@ -4367,6 +4388,8 @@ fn base_styles() -> &'static str {
         }
         body[data-panel-root="login"] {
             background:
+                linear-gradient(rgba(246, 247, 249, 0.82), rgba(246, 247, 249, 0.82)),
+                url("/assets/site-bg.png") center center / cover no-repeat,
                 radial-gradient(circle at 50% 18%, rgba(209, 31, 31, 0.06), transparent 42%),
                 radial-gradient(circle at 50% 120%, rgba(205, 162, 58, 0.10), transparent 55%),
                 #f6f7f9 !important;
