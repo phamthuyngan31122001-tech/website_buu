@@ -5,21 +5,21 @@
 #  Yeu cau truoc:
 #    - Da build duoc website_buu.exe (cargo build --release) -> target\release\
 #      (hoac dat s''an .exe vao thu muc, xem -ExePath)
-#    - DNS blacknull.net + www -> IP VPS
+#    - DNS htqlqc.com + www -> IP VPS
 #    - Mo quyen Administrator: chuot phai PowerShell -> Run as Administrator
 #
 #  Chay:
 #    powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 `
-#       -Domain blacknull.net -BootstrapUser Admin@1999 -BootstrapPass "MAT_KHAU_MANH"
+#       -Domain htqlqc.com -BootstrapUser Admin@1999 -BootstrapPass "MAT_KHAU_MANH"
 # ============================================================================
 param(
-    [string]$Domain        = "blacknull.net",
+    [string]$Domain        = "htqlqc.com",
     [int]   $Port          = 18088,
     [string]$InstallDir    = "C:\website_buu",
     [string]$ExePath       = "",                 # de trong = tu tim target\release\website_buu.exe
     [string]$BootstrapUser = "Admin@1999",
     [string]$BootstrapPass = "Admin@1999",
-    [string]$Email         = "admin@blacknull.net"
+    [string]$Email         = "admin@htqlqc.com"
 )
 $ErrorActionPreference = "Stop"
 

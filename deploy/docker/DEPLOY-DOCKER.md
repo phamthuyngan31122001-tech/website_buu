@@ -11,7 +11,7 @@ GitHub Actions (.github/workflows/deploy.yml): build Docker image → đẩy lê
         ↓
 VPS - Watchtower: mỗi 60s kiểm tra, thấy image mới → tự cập nhật container app
         ↓
-https://blacknull.net đã chạy bản mới (Caddy giữ HTTPS, dữ liệu giữ nguyên trong volume)
+https://htqlqc.com đã chạy bản mới (Caddy giữ HTTPS, dữ liệu giữ nguyên trong volume)
 ```
 
 ---
@@ -28,7 +28,7 @@ https://blacknull.net đã chạy bản mới (Caddy giữ HTTPS, dữ liệu gi
   *(Nếu muốn để Private: xem mục E.)*
 
 ### A2. Trên VPS Linux (Ubuntu/Debian)
-1. **DNS**: `A blacknull.net → IP_VPS` và `A www.blacknull.net → IP_VPS`
+1. **DNS**: `A htqlqc.com → IP_VPS` và `A www.htqlqc.com → IP_VPS`
    (nếu ở Cloudflare, để **DNS only/xám** để Caddy tự lấy chứng chỉ).
 2. **Mở cổng 80, 443** ở firewall nhà cung cấp VPS + máy:
    ```bash
@@ -51,7 +51,7 @@ https://blacknull.net đã chạy bản mới (Caddy giữ HTTPS, dữ liệu gi
    docker compose up -d
    docker compose logs -f       # xem khởi động; Ctrl+C để thoát log
    ```
-6. Mở **https://blacknull.net** → đăng nhập tài khoản bootstrap → đổi mật khẩu admin.
+6. Mở **https://htqlqc.com** → đăng nhập tài khoản bootstrap → đổi mật khẩu admin.
 
 ---
 

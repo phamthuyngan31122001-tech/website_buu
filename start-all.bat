@@ -6,7 +6,7 @@ REM  Sua TUNNEL / LINK ben duoi neu ban dung ten khac.
 REM ============================================================
 setlocal
 set TUNNEL=qk5
-set LINK=https://qk5.blacknull.net
+set LINK=https://qk5.htqlqc.com
 
 cd /d "%~dp0"
 

@@ -1,6 +1,6 @@
 # Triển khai website_buu lên VPS Windows — quy trình hoàn chỉnh
 
-Mục tiêu: chạy thật trên `https://blacknull.net`, chế độ **internet** (không LAN-only),
+Mục tiêu: chạy thật trên `https://htqlqc.com`, chế độ **internet** (không LAN-only),
 ổn định (tự khởi động lại, tự bật khi reboot), cập nhật nhanh.
 
 ## Kiến trúc
@@ -17,8 +17,8 @@ Internet ──HTTPS──> Caddy (cổng 443, tự xin Let's Encrypt)
 ## BƯỚC 0 — Chuẩn bị (làm 1 lần)
 1. **DNS**: trỏ về IP VPS (tại Cloudflare/registrar):
    ```
-   A   blacknull.net       -> <IP_VPS>
-   A   www.blacknull.net   -> <IP_VPS>
+   A   htqlqc.com       -> <IP_VPS>
+   A   www.htqlqc.com   -> <IP_VPS>
    ```
    (Nếu dùng Cloudflare DNS: để **DNS only / đám mây xám** để Caddy tự lấy cert. Bật proxy cam sau cũng được nếu SSL = Full.)
 2. **Mở cổng 80 và 443**: cả Windows Firewall (setup.ps1 tự mở) **và** firewall/security group của nhà cung cấp VPS.
@@ -45,11 +45,11 @@ cd C:\
 git clone -b claude/bug-fixes-cleanup-7gybqt <URL_REPO> C:\website_buu_src
 cd C:\website_buu_src
 powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 `
-  -Domain blacknull.net `
+  -Domain htqlqc.com `
   -ExePath C:\deploy\website_buu.exe `
   -BootstrapUser Admin@1999 -BootstrapPass "DAT_MAT_KHAU_MANH"
 ```
-→ Xong. Truy cập `https://blacknull.net`.
+→ Xong. Truy cập `https://htqlqc.com`.
 
 **Cập nhật sau này (Cách A):** build lại ở máy dev → copy exe đè lên VPS → trên VPS:
 ```powershell
@@ -75,7 +75,7 @@ git clone -b claude/bug-fixes-cleanup-7gybqt <URL_REPO> C:\website_buu_src
 cd C:\website_buu_src
 cargo build --release
 powershell -ExecutionPolicy Bypass -File deploy\windows\setup.ps1 `
-  -Domain blacknull.net -BootstrapUser Admin@1999 -BootstrapPass "DAT_MAT_KHAU_MANH"
+  -Domain htqlqc.com -BootstrapUser Admin@1999 -BootstrapPass "DAT_MAT_KHAU_MANH"
 ```
 **Cập nhật sau này (Cách B):** chỉ 1 lệnh, từ `C:\website_buu_src`:
 ```powershell

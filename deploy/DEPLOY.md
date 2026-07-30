@@ -3,14 +3,14 @@
 VPS có IP công khai nên phục vụ trực tiếp. HTTPS dùng nginx + Let's Encrypt (miễn phí).
 Chạy ổn định bằng systemd (tự khởi động lại, tự bật khi reboot).
 
-Giả định: Ubuntu/Debian, domain trỏ A record về IP VPS (vd `qk5.blacknull.net -> IP_VPS`).
+Giả định: Ubuntu/Debian, domain trỏ A record về IP VPS (vd `qk5.htqlqc.com -> IP_VPS`).
 
 ---
 
 ## 1. Trỏ tên miền về VPS
 Ở nơi quản lý DNS (Cloudflare hoặc registrar), tạo bản ghi:
 ```
-A    qk5.blacknull.net    ->    <IP_CONG_KHAI_CUA_VPS>
+A    qk5.htqlqc.com    ->    <IP_CONG_KHAI_CUA_VPS>
 ```
 (Nếu dùng Cloudflare DNS, để **DNS only / xám** lúc lấy chứng chỉ Let's Encrypt; sau đó bật proxy/cam tùy ý.)
 
@@ -59,7 +59,7 @@ sudo ln -s /etc/nginx/sites-available/website_buu /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 
 sudo apt install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d qk5.blacknull.net      # tự cấp chứng chỉ + tự gia hạn
+sudo certbot --nginx -d qk5.htqlqc.com      # tự cấp chứng chỉ + tự gia hạn
 ```
 
 ## 7. Mở tường lửa
@@ -70,7 +70,7 @@ sudo ufw enable
 ```
 
 ## 8. Xong
-Truy cập: **https://qk5.blacknull.net**
+Truy cập: **https://qk5.htqlqc.com**
 Đăng nhập bằng tài khoản bootstrap đã đặt trong service (đổi mật khẩu ngay sau lần đầu).
 
 ---

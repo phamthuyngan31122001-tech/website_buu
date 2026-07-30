@@ -2,10 +2,10 @@
 # Đổi email + tên miền cho đúng của bạn.
 
 {
-	email admin@blacknull.net
+	email admin@htqlqc.com
 }
 
-blacknull.net, www.blacknull.net {
+htqlqc.com, www.htqlqc.com {
 	encode gzip
 	reverse_proxy app:18088 {
 		header_up X-Forwarded-Proto https
